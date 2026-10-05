@@ -1,0 +1,414 @@
+:root {
+    --audit-warning-bg: #fff7ed;
+    --audit-warning-border: #fdba74;
+    --audit-warning-text: #7c2d12;
+    --audit-info-bg: #eff6ff;
+    --audit-info-border: #93c5fd;
+    --audit-info-text: #1e3a8a;
+    --audit-danger-bg: #fef2f2;
+    --audit-danger-border: #fca5a5;
+    --audit-danger-text: #7f1d1d;
+    --audit-success-bg: #f0fdf4;
+    --audit-success-border: #86efac;
+    --audit-success-text: #14532d;
+    --audit-neutral-bg: #f8fafc;
+    --audit-neutral-border: #cbd5e1;
+    --audit-neutral-text: #334155;
+}
+
+html[data-theme="dark"] {
+    --audit-warning-bg: #2a1a0c;
+    --audit-warning-border: #b45309;
+    --audit-warning-text: #fed7aa;
+    --audit-info-bg: #10203a;
+    --audit-info-border: #1d4ed8;
+    --audit-info-text: #bfdbfe;
+    --audit-danger-bg: #2a1013;
+    --audit-danger-border: #b91c1c;
+    --audit-danger-text: #fecaca;
+    --audit-success-bg: #0d2013;
+    --audit-success-border: #15803d;
+    --audit-success-text: #bbf7d0;
+    --audit-neutral-bg: #1e293b;
+    --audit-neutral-border: #475569;
+    --audit-neutral-text: #cbd5e1;
+}
+
+/* Vulnerability banner */
+
+.audit-warning-banner {
+    background: var(--audit-warning-bg);
+    border: 1px solid var(--audit-warning-border);
+    border-radius: 12px;
+    padding: 20px;
+    color: var(--audit-warning-text);
+}
+
+.audit-warning-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 15px;
+}
+
+.audit-warning-header svg {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.audit-vuln-list {
+    list-style: none;
+    margin: 16px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 10px;
+}
+
+.audit-vuln-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.audit-vuln-id {
+    font-family: 'Courier New', monospace;
+    font-weight: 700;
+    background: var(--audit-danger-bg);
+    border: 1px solid var(--audit-danger-border);
+    color: var(--audit-danger-text);
+    border-radius: 5px;
+    padding: 1px 7px;
+}
+
+.audit-vuln-title {
+    font-weight: 600;
+}
+
+.audit-vuln-cwe,
+.audit-vuln-owasp,
+.audit-vuln-nist {
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    border: 1px solid var(--audit-warning-border);
+    border-radius: 5px;
+    padding: 1px 6px;
+    white-space: nowrap;
+}
+
+.audit-vuln-detail {
+    flex-basis: 100%;
+    opacity: 0.85;
+}
+
+.audit-demo-attacks {
+    margin-top: 16px;
+    font-size: 13px;
+}
+
+.audit-demo-attacks summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.audit-demo-attacks ul {
+    margin: 10px 0 0;
+    padding-left: 20px;
+    display: grid;
+    gap: 4px;
+}
+
+.audit-demo-attacks code {
+    font-family: 'Courier New', monospace;
+    background: var(--audit-neutral-bg);
+    border: 1px solid var(--audit-neutral-border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    word-break: break-all;
+}
+
+/* Integrity panel */
+
+.audit-integrity-result {
+    margin-top: 14px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    border: 1px solid var(--audit-neutral-border);
+    background: var(--audit-neutral-bg);
+    color: var(--audit-neutral-text);
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.audit-integrity-verdict {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.audit-integrity-verdict.is-verified {
+    background: var(--audit-success-bg);
+    border: 1px solid var(--audit-success-border);
+    color: var(--audit-success-text);
+    border-radius: 8px;
+    padding: 6px 12px;
+}
+
+.audit-integrity-verdict.is-compromised {
+    background: var(--audit-danger-bg);
+    border: 1px solid var(--audit-danger-border);
+    color: var(--audit-danger-text);
+    border-radius: 8px;
+    padding: 6px 12px;
+}
+
+.audit-integrity-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.audit-integrity-grid div {
+    background: var(--audit-neutral-bg);
+    border: 1px solid var(--audit-neutral-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
+.audit-integrity-grid strong {
+    display: block;
+    font-size: 18px;
+}
+
+.audit-btn {
+    padding: 8px 14px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+/* Filters */
+
+.audit-filter-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 14px;
+    margin-bottom: 18px;
+}
+
+.audit-filter-grid .form-group select,
+.audit-filter-grid .form-group input {
+    width: 100%;
+}
+
+.audit-filter-grid select,
+.audit-note-grid select,
+.audit-export-grid select {
+    padding: 10px 12px;
+    border: 1px solid var(--border-color, #cbd5e1);
+    border-radius: 8px;
+    background: var(--bg-primary, #ffffff);
+    color: inherit;
+    font-size: 14px;
+}
+
+.audit-filter-actions {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.audit-note-grid,
+.audit-export-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 14px;
+    margin-bottom: 14px;
+    align-items: end;
+}
+
+.audit-note-form textarea,
+#note-details {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color, #cbd5e1);
+    border-radius: 8px;
+    background: var(--bg-primary, #ffffff);
+    color: inherit;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    resize: vertical;
+}
+
+.audit-purge-form {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px dashed var(--audit-warning-border);
+}
+
+.audit-checkbox-group label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+}
+
+.audit-edit-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.audit-edit-field input {
+    padding: 8px 10px;
+    border: 1px solid var(--border-color, #cbd5e1);
+    border-radius: 8px;
+    background: var(--bg-primary, #ffffff);
+    color: inherit;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    font-weight: 400;
+    min-width: 220px;
+}
+
+.audit-debug-note {
+    margin-top: 10px;
+    font-size: 12px;
+    font-style: italic;
+    opacity: 0.8;
+}
+
+/* Table */
+
+.audit-table {
+    min-width: 1180px;
+}
+
+.audit-table td {
+    vertical-align: top;
+    font-size: 13px;
+}
+
+.audit-table .audit-cell-details,
+.audit-table .audit-cell-ua {
+    max-width: 260px;
+    word-break: break-word;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+}
+
+.audit-empty {
+    text-align: center;
+    color: #94a3b8;
+    padding: 28px 0 !important;
+}
+
+.severity-badge {
+    display: inline-block;
+    border-radius: 5px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
+}
+
+.severity-info {
+    background: var(--audit-info-bg);
+    border: 1px solid var(--audit-info-border);
+    color: var(--audit-info-text);
+}
+
+.severity-notice {
+    background: var(--audit-neutral-bg);
+    border: 1px solid var(--audit-neutral-border);
+    color: var(--audit-neutral-text);
+}
+
+.severity-warning {
+    background: var(--audit-warning-bg);
+    border: 1px solid var(--audit-warning-border);
+    color: var(--audit-warning-text);
+}
+
+.severity-error,
+.severity-critical {
+    background: var(--audit-danger-bg);
+    border: 1px solid var(--audit-danger-border);
+    color: var(--audit-danger-text);
+}
+
+.audit-integrity-chip {
+    display: inline-block;
+    border-radius: 5px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.audit-integrity-chip.is-verified {
+    background: var(--audit-success-bg);
+    border: 1px solid var(--audit-success-border);
+    color: var(--audit-success-text);
+}
+
+.audit-integrity-chip.is-compromised {
+    background: var(--audit-danger-bg);
+    border: 1px solid var(--audit-danger-border);
+    color: var(--audit-danger-text);
+}
+
+.audit-integrity-chip.is-unchecked {
+    background: var(--audit-warning-bg);
+    border: 1px solid var(--audit-warning-border);
+    color: var(--audit-warning-text);
+}
+
+.audit-mono-id {
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    color: #64748b;
+}
+
+/* Tail */
+
+.audit-tail-hint {
+    font-size: 12px;
+    color: #94a3b8;
+}
+
+.audit-tail-output {
+    margin: 14px 0 0;
+    padding: 14px;
+    background: #0f172a;
+    color: #e2e8f0;
+    border-radius: 10px;
+    border: 1px solid #1e293b;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    max-height: 320px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+@media (max-width: 640px) {
+    .audit-vuln-list li {
+        font-size: 12px;
+    }
+
+    .audit-table .audit-cell-details,
+    .audit-table .audit-cell-ua {
+        max-width: 160px;
+    }
+}

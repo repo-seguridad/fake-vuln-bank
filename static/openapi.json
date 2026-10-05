@@ -55,6 +55,10 @@
     {
       "name": "internal",
       "description": "Internal-only endpoints for SSRF demonstration"
+    },
+    {
+      "name": "audit",
+      "description": "Security event trail and log integrity endpoints (intentionally vulnerable)"
     }
   ],
   "paths": {
@@ -1656,7 +1660,1489 @@
           }
         }
       }
-    }
+    },
+    "/admin/audit": {
+        "get": {
+          "tags": ["audit"],
+          "summary": "Audit trail console",
+          "description": "Server-rendered security event console. Requires is_admin in the JWT and is linked from the admin panel sidebar.",
+          "responses": {
+            "200": {
+              "description": "HTML console"
+            },
+            "403": {
+              "description": "Access Denied",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Access Denied"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+    "/api/audit/logs": {
+        "get": {
+          "tags": ["audit"],
+          "summary": "Filter and page the audit trail",
+          "description": "AV-01 / AV-13: search, event_type, severity, actor, user_id, from, to, limit, offset and order are all concatenated into SQL with f-strings, and no ownership check limits which actor's trail may be read. It also exposes a UNION SELECT path over the users table.",
+          "parameters": [
+            {
+              "name": "search",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "Free-text filter concatenated into the WHERE clause (CWE-89). Try: ' OR '1'='1"
+            },
+            {
+              "name": "event_type",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "enum": ["LOGIN_SUCCESS", "LOGIN_FAILED", "AUDIT_NOTE_ADDED", "AUDIT_LOG_PURGED"]
+              },
+              "description": "Exact event type match, concatenated into SQL (CWE-89)"
+            },
+            {
+              "name": "severity",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "enum": ["INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL"]
+              }
+            },
+            {
+              "name": "actor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "Actor username fragment, concatenated into SQL (CWE-89)"
+            },
+            {
+              "name": "user_id",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer"
+              },
+              "description": "Any actor id, with no ownership check (CWE-639)"
+            },
+            {
+              "name": "from",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            {
+              "name": "to",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 100,
+                "example": 100
+              },
+              "description": "Interpolated into LIMIT. Try: 1; DELETE FROM audit_log;--"
+            },
+            {
+              "name": "offset",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 0
+              },
+              "description": "Interpolated into OFFSET (CWE-89)"
+            },
+            {
+              "name": "order",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "created_at DESC"
+              },
+              "description": "Interpolated into ORDER BY. Try: created_at, (SELECT password FROM users LIMIT 1)"
+            },
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "count": {
+                        "type": "integer",
+                        "example": 100
+                      },
+                      "total": {
+                        "type": "integer",
+                        "example": 1024
+                      },
+                      "entries": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "example": 412
+                            },
+                            "event_type": {
+                              "type": "string",
+                              "example": "LOGIN_SUCCESS"
+                            },
+                            "severity": {
+                              "type": "string",
+                              "example": "INFO"
+                            },
+                            "actor_id": {
+                              "type": "integer",
+                              "nullable": true,
+                              "example": 1
+                            },
+                            "actor_username": {
+                              "type": "string",
+                              "nullable": true,
+                              "example": "admin"
+                            },
+                            "action": {
+                              "type": "string",
+                              "example": "login"
+                            },
+                            "target": {
+                              "type": "string",
+                              "nullable": true,
+                              "example": "admin"
+                            },
+                            "details": {
+                              "type": "string",
+                              "nullable": true,
+                              "description": "Attacker-controlled text, stored verbatim and rendered as HTML in the console (CWE-79)"
+                            },
+                            "ip_address": {
+                              "type": "string",
+                              "nullable": true,
+                              "example": "127.0.0.1"
+                            },
+                            "user_agent": {
+                              "type": "string",
+                              "nullable": true,
+                              "description": "Raw request header, log injection sink (CWE-117)"
+                            },
+                            "referer": {
+                              "type": "string",
+                              "nullable": true
+                            },
+                            "request_id": {
+                              "type": "string",
+                              "nullable": true
+                            },
+                            "http_method": {
+                              "type": "string",
+                              "example": "POST"
+                            },
+                            "endpoint": {
+                              "type": "string",
+                              "example": "/login"
+                            },
+                            "result": {
+                              "type": "string",
+                              "example": "SUCCESS"
+                            },
+                            "signature": {
+                              "type": "string",
+                              "nullable": true,
+                              "example": null,
+                              "description": "Always null: nothing ever signs an entry (CWE-354)"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "example": "2026-10-05T09:14:22"
+                            }
+                          }
+                        }
+                      },
+                      "debug_info": {
+                        "type": "object",
+                        "description": "Echoes the generated SQL fragments"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+    "/api/audit/logs/export": {
+        "get": {
+          "tags": ["audit"],
+          "summary": "Export the audit trail",
+          "description": "AV-04: the export format is not whitelisted and filename is joined onto the export directory without secure_filename() or normalization, so a traversal returns any file readable by the process. Try filename=../../../../etc/passwd. The export is also unpaged and unmetered, so the whole trail leaves in one request.",
+          "parameters": [
+            {
+              "name": "format",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "csv",
+                "enum": ["csv", "json"]
+              },
+              "description": "Not whitelisted; anything other than json falls through to CSV"
+            },
+            {
+              "name": "filename",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "default": "audit_export.csv"
+              },
+              "description": "Path traversal sink (CWE-22)"
+            },
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "count": {
+                        "type": "integer",
+                        "example": 1024
+                      },
+                      "entries": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "example": 412
+                            },
+                            "event_type": {
+                              "type": "string",
+                              "example": "LOGIN_SUCCESS"
+                            },
+                            "severity": {
+                              "type": "string",
+                              "example": "INFO"
+                            },
+                            "actor_id": {
+                              "type": "integer",
+                              "nullable": true,
+                              "example": 1
+                            },
+                            "actor_username": {
+                              "type": "string",
+                              "nullable": true,
+                              "example": "admin"
+                            },
+                            "action": {
+                              "type": "string",
+                              "example": "login"
+                            },
+                            "target": {
+                              "type": "string",
+                              "nullable": true,
+                              "example": "admin"
+                            },
+                            "details": {
+                              "type": "string",
+                              "nullable": true,
+                              "description": "Attacker-controlled text, stored verbatim and rendered as HTML in the console (CWE-79)"
+                            },
+                            "ip_address": {
+                              "type": "string",
+                              "nullable": true,
+                              "example": "127.0.0.1"
+                            },
+                            "user_agent": {
+                              "type": "string",
+                              "nullable": true,
+                              "description": "Raw request header, log injection sink (CWE-117)"
+                            },
+                            "referer": {
+                              "type": "string",
+                              "nullable": true
+                            },
+                            "request_id": {
+                              "type": "string",
+                              "nullable": true
+                            },
+                            "http_method": {
+                              "type": "string",
+                              "example": "POST"
+                            },
+                            "endpoint": {
+                              "type": "string",
+                              "example": "/login"
+                            },
+                            "result": {
+                              "type": "string",
+                              "example": "SUCCESS"
+                            },
+                            "signature": {
+                              "type": "string",
+                              "nullable": true,
+                              "example": null,
+                              "description": "Always null: nothing ever signs an entry (CWE-354)"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "example": "2026-10-05T09:14:22"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+    "/api/audit/logs/{log_id}": {
+        "get": {
+          "tags": ["audit"],
+          "summary": "Fetch one audit entry",
+          "description": "AV-02: the only check is that a token exists. Any logged-in customer can read the administrator's trail entry by entry.",
+          "parameters": [
+            {
+              "name": "log_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              }
+            },
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "entry": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "example": 412
+                          },
+                          "event_type": {
+                            "type": "string",
+                            "example": "LOGIN_SUCCESS"
+                          },
+                          "severity": {
+                            "type": "string",
+                            "example": "INFO"
+                          },
+                          "actor_id": {
+                            "type": "integer",
+                            "nullable": true,
+                            "example": 1
+                          },
+                          "actor_username": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": "admin"
+                          },
+                          "action": {
+                            "type": "string",
+                            "example": "login"
+                          },
+                          "target": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": "admin"
+                          },
+                          "details": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Attacker-controlled text, stored verbatim and rendered as HTML in the console (CWE-79)"
+                          },
+                          "ip_address": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": "127.0.0.1"
+                          },
+                          "user_agent": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Raw request header, log injection sink (CWE-117)"
+                          },
+                          "referer": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "request_id": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "http_method": {
+                            "type": "string",
+                            "example": "POST"
+                          },
+                          "endpoint": {
+                            "type": "string",
+                            "example": "/login"
+                          },
+                          "result": {
+                            "type": "string",
+                            "example": "SUCCESS"
+                          },
+                          "signature": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": null,
+                            "description": "Always null: nothing ever signs an entry (CWE-354)"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "example": "2026-10-05T09:14:22"
+                          }
+                        }
+                      },
+                      "debug_info": {
+                        "type": "object",
+                        "description": "Includes the requester's admin flag"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "tags": ["audit"],
+          "summary": "Delete one audit entry",
+          "description": "AV-03 / AV-12: no administrator check, no CSRF token, and the deletion itself is never recorded anywhere.",
+          "parameters": [
+            {
+              "name": "log_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              }
+            },
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "deleted": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "example": 412
+                          },
+                          "event_type": {
+                            "type": "string",
+                            "example": "LOGIN_SUCCESS"
+                          },
+                          "severity": {
+                            "type": "string",
+                            "example": "INFO"
+                          },
+                          "actor_id": {
+                            "type": "integer",
+                            "nullable": true,
+                            "example": 1
+                          },
+                          "actor_username": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": "admin"
+                          },
+                          "action": {
+                            "type": "string",
+                            "example": "login"
+                          },
+                          "target": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": "admin"
+                          },
+                          "details": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Attacker-controlled text, stored verbatim and rendered as HTML in the console (CWE-79)"
+                          },
+                          "ip_address": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": "127.0.0.1"
+                          },
+                          "user_agent": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Raw request header, log injection sink (CWE-117)"
+                          },
+                          "referer": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "request_id": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "http_method": {
+                            "type": "string",
+                            "example": "POST"
+                          },
+                          "endpoint": {
+                            "type": "string",
+                            "example": "/login"
+                          },
+                          "result": {
+                            "type": "string",
+                            "example": "SUCCESS"
+                          },
+                          "signature": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": null,
+                            "description": "Always null: nothing ever signs an entry (CWE-354)"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "example": "2026-10-05T09:14:22"
+                          }
+                        }
+                      },
+                      "debug_info": {
+                        "type": "object",
+                        "description": "Reports deletion_logged: false"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+    "/admin/audit/logs/{log_id}": {
+        "post": {
+          "tags": ["audit"],
+          "summary": "Amend an audit entry in place",
+          "description": "AV-03 / AV-01: rewrites history, never checks is_admin, interpolates every field, and never re-verifies integrity afterwards.",
+          "parameters": [
+            {
+              "name": "log_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              }
+            },
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "requestBody": {
+            "required": false,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Audit entry updated"
+                      },
+                      "debug_info": {
+                        "type": "object",
+                        "description": "Reports integrity_rechecked: false"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+    "/api/audit/logs/{log_id}/signature": {
+        "get": {
+          "tags": ["audit"],
+          "summary": "Integrity verdict for one audit entry",
+          "description": "AV-11: record_event() never writes a signature and no signing key is configured, so verify_entry_signature() takes the unsigned branch and always answers verified: true. There is no distinct 'unsigned' verdict, so a manipulated row is indistinguishable from a clean one.",
+          "parameters": [
+            {
+              "name": "log_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              }
+            },
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "log_id": {
+                        "type": "integer",
+                        "example": 412
+                      },
+                      "integrity": {
+                        "type": "object",
+                        "properties": {
+                          "verified": {
+                            "type": "boolean",
+                            "example": true
+                          },
+                          "checked": {
+                            "type": "boolean",
+                            "example": false
+                          },
+                          "signed": {
+                            "type": "boolean",
+                            "example": false
+                          },
+                          "reason": {
+                            "type": "string",
+                            "example": "No signature material available; entry accepted as-is"
+                          }
+                        }
+                      },
+                      "stored_signature": {
+                        "type": "string",
+                        "nullable": true,
+                        "example": null
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+    "/admin/audit/integrity-check": {
+        "get": {
+          "tags": ["audit"],
+          "summary": "Sweep the trail and report tampering",
+          "description": "AV-11: the sweep counts unsigned entries and then declares them verified anyway, so tampered is always 0. After a purge it reports a clean trail over an empty table, which is the exact DETECT failure NIST CSF 2.0 DE.AE exists to prevent.",
+          "parameters": [
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 500
+              },
+              "description": "Interpolated into LIMIT (CWE-89)"
+            },
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "integrity": {
+                        "type": "object",
+                        "properties": {
+                          "checked": {
+                            "type": "integer",
+                            "example": 500
+                          },
+                          "verified": {
+                            "type": "integer",
+                            "example": 500
+                          },
+                          "unsigned": {
+                            "type": "integer",
+                            "example": 500
+                          },
+                          "tampered": {
+                            "type": "integer",
+                            "example": 0
+                          },
+                          "overall": {
+                            "type": "string",
+                            "example": "verified"
+                          }
+                        }
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "All audit entries verified successfully"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+    "/api/audit/stats": {
+        "get": {
+          "tags": ["audit"],
+          "summary": "Aggregate counters for the console",
+          "description": "AV-01 / AV-13: window, severity and actor are interpolated. The unsigned_entries counter is the only honest number on the page, while the integrity banner above it claims the trail is verified.",
+          "parameters": [
+            {
+              "name": "window",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 24
+              },
+              "description": "Hours, interpolated into make_interval()"
+            },
+            {
+              "name": "severity",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "actor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "stats": {
+                        "type": "object"
+                      },
+                      "integrity": {
+                        "type": "object",
+                        "description": "unsigned_entries plus the claimed verified status"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+    "/api/audit/tail": {
+        "get": {
+          "tags": ["audit"],
+          "summary": "Stream recent events as plain text lines",
+          "description": "AV-02 / AV-13: no ownership check and lines is interpolated. These are the forged lines that log injection produced, presented as platform output.",
+          "parameters": [
+            {
+              "name": "lines",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 50
+              },
+              "description": "Interpolated into LIMIT (CWE-89)"
+            },
+            {
+              "name": "follow",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "count": {
+                        "type": "integer",
+                        "example": 40
+                      },
+                      "lines": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+    "/api/audit/note": {
+        "post": {
+          "tags": ["audit"],
+          "summary": "Append a free-text note to the trail",
+          "description": "AV-09 / AV-13: the client authors event_type, severity, actor_id and actor_username, so the trail fills with entries the platform appears to have written on the administrator's behalf. AV-05: details is stored verbatim and painted with innerHTML in the console, a stored XSS sink in an admin session. AV-12: no CSRF token.",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "details": {
+                      "type": "string",
+                      "example": "<img src=x onerror=alert(1)>"
+                    },
+                    "event_type": {
+                      "type": "string",
+                      "default": "AUDIT_NOTE_ADDED"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "default": "INFO"
+                    },
+                    "actor_username": {
+                      "type": "string",
+                      "description": "Identity override; recorded as-is (CWE-807)"
+                    },
+                    "actor_id": {
+                      "type": "integer",
+                      "description": "Identity override; recorded as-is"
+                    },
+                    "target": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "parameters": [
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Note added to the audit trail"
+                      },
+                      "entry": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "example": 412
+                          },
+                          "event_type": {
+                            "type": "string",
+                            "example": "LOGIN_SUCCESS"
+                          },
+                          "severity": {
+                            "type": "string",
+                            "example": "INFO"
+                          },
+                          "actor_id": {
+                            "type": "integer",
+                            "nullable": true,
+                            "example": 1
+                          },
+                          "actor_username": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": "admin"
+                          },
+                          "action": {
+                            "type": "string",
+                            "example": "login"
+                          },
+                          "target": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": "admin"
+                          },
+                          "details": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Attacker-controlled text, stored verbatim and rendered as HTML in the console (CWE-79)"
+                          },
+                          "ip_address": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": "127.0.0.1"
+                          },
+                          "user_agent": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Raw request header, log injection sink (CWE-117)"
+                          },
+                          "referer": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "request_id": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "http_method": {
+                            "type": "string",
+                            "example": "POST"
+                          },
+                          "endpoint": {
+                            "type": "string",
+                            "example": "/login"
+                          },
+                          "result": {
+                            "type": "string",
+                            "example": "SUCCESS"
+                          },
+                          "signature": {
+                            "type": "string",
+                            "nullable": true,
+                            "example": null,
+                            "description": "Always null: nothing ever signs an entry (CWE-354)"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "example": "2026-10-05T09:14:22"
+                          }
+                        }
+                      },
+                      "debug_info": {
+                        "type": "object",
+                        "description": "Reports identity_overridden"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+    "/admin/audit/purge": {
+        "post": {
+          "tags": ["audit"],
+          "summary": "Bulk-delete audit entries",
+          "description": "AV-10: the purge writes its own AUDIT_LOG_PURGED event before deleting, so the very next statement erases the only record that the purge happened. There is no administrator check, no CSRF token, no approval step, and nothing is archived first. AV-01: the before, event_type and severity cutoffs are interpolated.",
+          "requestBody": {
+            "required": false,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "all": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "True issues DELETE FROM audit_log"
+                    },
+                    "before": {
+                      "type": "string",
+                      "description": "ISO timestamp cutoff, interpolated"
+                    },
+                    "event_type": {
+                      "type": "string",
+                      "description": "Interpolated"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "description": "Interpolated"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "parameters": [
+            {
+              "name": "token",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string"
+              },
+              "description": "JWT accepted from the query string, inherited from auth.token_required (CWE-598)"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "success"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Audit trail purged"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": ["all", "filtered"]
+                      },
+                      "debug_info": {
+                        "type": "object",
+                        "description": "Reports self_record_survives: false and archived_before_delete: false"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid JWT token",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "example": "error"
+                      },
+                      "message": {
+                        "type": "string",
+                        "example": "Token is missing"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
   },
   "components": {
     "securitySchemes": {

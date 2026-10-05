@@ -52,6 +52,15 @@
                     </svg>
                     <span>Loans</span>
                 </a>
+                <a href="{{ url_for('audit_console') }}" class="sidebar-nav-item" data-section="audit">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="8" y1="13" x2="16" y2="13"></line>
+                        <line x1="8" y1="17" x2="14" y2="17"></line>
+                    </svg>
+                    <span>Audit Trail</span>
+                </a>
                 <a href="#settings" class="sidebar-nav-item" data-section="settings">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="12" cy="12" r="3"></circle>
@@ -407,6 +416,12 @@
             // Navigation
             document.querySelectorAll('.sidebar-nav-item').forEach(item => {
                 item.addEventListener('click', function(e) {
+                    // Items that point at another page (Audit Trail) keep their
+                    // real navigation; only in-page sections are intercepted.
+                    if (this.getAttribute('href').charAt(0) !== '#') {
+                        return;
+                    }
+
                     e.preventDefault();
                     const section = this.getAttribute('data-section');
 

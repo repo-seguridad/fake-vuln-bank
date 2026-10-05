@@ -30,6 +30,7 @@ This project is a simple banking application with multiple security vulnerabilit
 - 💱 Virtual Card Funding from Main USD Balance with built-in currency conversion (`USD`, `GBP`, `NGN`, `JPY`, `EUR`, `QAR`, `BTC`, `ETH`)
 - 🛒 Public Merchant Payment API for intentionally vulnerable ecommerce/demo integrations
 - 📱 Bill Payments System
+- 🧾 Security Audit Trail & Log Integrity Console (event recording, filtering, integrity sweep, export and purge)
 - 🤖 AI Customer Support Agent (Real LLM with DeepSeek API / Mock Mode)
 
 ![image](https://github.com/user-attachments/assets/f8d14d62-d71e-41f3-85c7-133553a75989)
@@ -137,6 +138,27 @@ This project is a simple banking application with multiple security vulnerabilit
    - Missing GraphQL depth / complexity controls
    - Raw GraphQL error disclosure
    - Transaction analytics exposure through admin-scoped queries
+
+12. **Audit Logging Vulnerabilities** (`audit_log.py`)
+   - **AV-01 · SQL injection in console filters** — `search`, `event_type`, `severity`, `actor`, `user_id`, `from`, `to`, `limit`, `offset` and `ORDER BY {order}` are concatenated with f-strings (CWE-89). `UNION SELECT username, password FROM users` turns the console search into a credential dump.
+   - **AV-02 · Broken object level authorization (IDOR)** — `GET /api/audit/logs/<id>` and `?user_id=` only check that a token exists, so any customer reads the administrator's trail (CWE-639)
+   - **AV-03 · Missing function level authorization** — edit, delete and purge never check `is_admin`, so a normal account rewrites or erases history (CWE-862)
+   - **AV-04 · Path traversal in the export** — `filename` is resolved without `secure_filename()` or a whitelist, so `filename=../../../../etc/passwd` returns arbitrary files; the export is also unpaged and unmetered (CWE-22)
+   - **AV-05 · Stored XSS through audit notes** — `POST /api/audit/note` stores `details` verbatim and the console paints it with `innerHTML`, stealing the admin JWT out of `localStorage` (CWE-79)
+   - **AV-06 · Reflected XSS in the console search** — the active filter is echoed into the results header with `innerHTML` (CWE-79)
+   - **AV-07 · No Content-Security-Policy** — no CSP header is emitted anywhere, so AV-05 and AV-06 run unrestricted (CWE-693)
+   - **AV-08 · Log injection and log forging** — `render_audit_line()` concatenates stored values with no escaping and `_sanitize_for_log()` is never called. A `POST /api/audit/note` whose `event_type` carries a newline renders as **two** log lines, the second indistinguishable from a genuine `TRANSFER_INITIATED` record; header values are mirrored raw too, so `User-Agent: x severity=CRITICAL result=SUCCESS actor=admin` rewrites the fields of the rendered line (the WSGI layer strips CR/LF from headers, so header poisoning degrades to field-level forging) (CWE-117)
+   - **AV-09 · Audit poisoning** — `POST /api/audit/note` lets the client author `event_type`, `severity`, `actor_username` and `details`, planting entries that look platform-written (CWE-778)
+   - **AV-10 · Anti-forensic purge** — the purge writes its own event *before* deleting, so the delete erases the only record that it happened; no admin check, no CSRF token, no archive (CWE-778)
+   - **AV-11 · Unverifiable integrity (false assurance)** — `signature` is never written and an unsigned entry is reported as `verified: true`, so the detector stays green over a manipulated or empty trail (CWE-354)
+   - **AV-12 · CSRF** — note, edit, delete and purge accept bare cross-site form posts with no token and no `Origin` check (CWE-352)
+   - **AV-13 · HTTP parameter tampering** — `limit`, `offset`, `order` and the recorded actor identity are client-controlled, and the JWT is also accepted from the query string via `auth.token_required` (CWE-807, CWE-598)
+
+   Console: `/admin/audit` (linked from the admin panel sidebar). API:
+   `/api/audit/logs`, `/api/audit/logs/export`, `/api/audit/logs/<id>`,
+   `/api/audit/logs/<id>/signature`, `/api/audit/stats`, `/api/audit/tail`,
+   `/api/audit/note`, `/admin/audit/logs/<id>`, `/admin/audit/integrity-check`,
+   `/admin/audit/purge`.
 
 ## Installation & Setup 🚀
 

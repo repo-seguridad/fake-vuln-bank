@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Audit Trail - VulnBank Admin</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-16.svg') }}" sizes="16x16">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='admin.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='audit.css') }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>document.documentElement.setAttribute("data-theme", localStorage.getItem("vb-theme") || "light");</script>
+</head>
+<body>
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <div class="admin-layout">
+        <!-- Sidebar -->
+        <aside class="admin-sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                    </svg>
+                    <span class="sidebar-logo-text">VulnBank</span>
+                    <span class="sidebar-badge">Audit</span>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <a href="{{ url_for('admin_panel') }}" class="sidebar-nav-item" data-section="overview">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="7" height="7"></rect>
+                        <rect x="14" y="3" width="7" height="7"></rect>
+                        <rect x="14" y="14" width="7" height="7"></rect>
+                        <rect x="3" y="14" width="7" height="7"></rect>
+                    </svg>
+                    <span>Overview</span>
+                </a>
+                <a href="{{ url_for('admin_panel') }}" class="sidebar-nav-item" data-section="users">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="9" cy="7" r="4"></circle>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                    </svg>
+                    <span>Users</span>
+                </a>
+                <a href="{{ url_for('admin_panel') }}" class="sidebar-nav-item" data-section="loans">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+                        <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+                    </svg>
+                    <span>Loans</span>
+                </a>
+                <a href="{{ url_for('audit_console') }}" class="sidebar-nav-item active" data-section="audit">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="8" y1="13" x2="16" y2="13"></line>
+                        <line x1="8" y1="17" x2="16" y2="17"></line>
+                    </svg>
+                    <span>Audit Trail</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <a href="{{ url_for('dashboard') }}" class="sidebar-back-link">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="19" y1="12" x2="5" y2="12"></line>
+                        <polyline points="12 19 5 12 12 5"></polyline>
+                    </svg>
+                    <span>Back to Dashboard</span>
+                </a>
+                <button class="theme-toggle-sidebar" onclick="toggleTheme()" aria-label="Toggle dark mode">
+                    <span class="toggle-icon toggle-icon-sun">☀️</span>
+                    <span class="toggle-icon toggle-icon-moon">🌙</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="admin-main" id="main-content">
+            <header class="admin-topbar">
+                <h1 class="admin-page-title">Audit Trail</h1>
+                <div class="admin-profile-mini">
+                    <span class="admin-name">System Administrator</span>
+                    <img src="{{ url_for('static', filename='uploads/admin.png') }}" alt="Admin">
+                </div>
+            </header>
+
+            <!-- Messages -->
+            <div id="message" aria-live="polite"></div>
+
+            <!-- Intentional vulnerability banner -->
+            <section class="admin-section" id="warnings-section">
+                <div class="audit-warning-banner">
+                    <div class="audit-warning-header">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                            <line x1="12" y1="9" x2="12" y2="13"></line>
+                            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                        </svg>
+                        <strong>This console is intentionally insecure (Logs/Auditoria module)</strong>
+                    </div>
+                    <ul class="audit-vuln-list">
+                        {% for finding in module_vulnerabilities %}
+                        <li>
+                            <span class="audit-vuln-id">{{ finding.id }}</span>
+                            <span class="audit-vuln-title">{{ finding.title }}</span>
+                            <span class="audit-vuln-cwe">{{ finding.cwe }}</span>
+                            <span class="audit-vuln-owasp">{{ finding.owasp }}</span>
+                            <span class="audit-vuln-nist">NIST {{ finding.nist }}</span>
+                            <span class="audit-vuln-detail">{{ finding.detail }}</span>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    <details class="audit-demo-attacks">
+                        <summary>Demo attacks for this module</summary>
+                        <ul>
+                            {% for attack in demo_attacks %}
+                            <li><code>{{ attack }}</code></li>
+                            {% endfor %}
+                        </ul>
+                    </details>
+                </div>
+            </section>
+
+            <!-- Metrics -->
+            <section class="admin-section" id="metrics-section">
+                <div class="metrics-grid">
+                    <div class="metric-card metric-primary">
+                        <div class="metric-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                <polyline points="14 2 14 8 20 8"></polyline>
+                            </svg>
+                        </div>
+                        <div class="metric-content">
+                            <span class="metric-label">Audit Events</span>
+                            <strong class="metric-value" id="metric-total">--</strong>
+                        </div>
+                    </div>
+                    <div class="metric-card metric-danger">
+                        <div class="metric-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                            </svg>
+                        </div>
+                        <div class="metric-content">
+                            <span class="metric-label">Unsigned Entries</span>
+                            <strong class="metric-value" id="metric-unsigned">--</strong>
+                        </div>
+                    </div>
+                    <div class="metric-card metric-warning">
+                        <div class="metric-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                            </svg>
+                        </div>
+                        <div class="metric-content">
+                            <span class="metric-label">Warnings / Errors</span>
+                            <strong class="metric-value" id="metric-critical">--</strong>
+                        </div>
+                    </div>
+                    <div class="metric-card metric-success">
+                        <div class="metric-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                                <circle cx="9" cy="7" r="4"></circle>
+                            </svg>
+                        </div>
+                        <div class="metric-content">
+                            <span class="metric-label">Distinct Actors</span>
+                            <strong class="metric-value" id="metric-actors">--</strong>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Integrity -->
+            <section class="admin-section" id="integrity-section">
+                <div class="content-card">
+                    <div class="card-header">
+                        <h3>Log Integrity</h3>
+                        <button type="button" class="btn-primary audit-btn" id="run-integrity-check">Run integrity check</button>
+                    </div>
+                    <div id="integrity-result" class="audit-integrity-result">Not checked yet.</div>
+                </div>
+            </section>
+
+            <!-- Filters -->
+            <section class="admin-section" id="filters-section">
+                <div class="content-card">
+                    <div class="section-header">
+                        <h2>Event Filters</h2>
+                        <p class="section-subtitle">Every filter is concatenated into SQL without parameterization (AV-01)</p>
+                    </div>
+
+                    <form id="audit-filter-form" class="audit-filter-grid">
+                        <div class="form-group">
+                            <label for="filter-search">Search</label>
+                            <input type="text" id="filter-search" name="search" placeholder="event, actor, details, user-agent">
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-event-type">Event type</label>
+                            <select id="filter-event-type" name="event_type">
+                                <option value="">All event types</option>
+                                {% for event_type in event_types %}
+                                <option value="{{ event_type }}">{{ event_type }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-severity">Severity</label>
+                            <select id="filter-severity" name="severity">
+                                <option value="">All severities</option>
+                                {% for severity in severities %}
+                                <option value="{{ severity }}">{{ severity }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-actor">Actor</label>
+                            <input type="text" id="filter-actor" name="actor" placeholder="username fragment">
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-user-id">Actor ID</label>
+                            <input type="text" id="filter-user-id" name="user_id" placeholder="actor_id value">
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-from">From</label>
+                            <input type="text" id="filter-from" name="from" placeholder="2026-01-01 00:00:00">
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-to">To</label>
+                            <input type="text" id="filter-to" name="to" placeholder="2026-12-31 23:59:59">
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-limit">Limit</label>
+                            <input type="text" id="filter-limit" name="limit" value="100">
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-offset">Offset</label>
+                            <input type="text" id="filter-offset" name="offset" value="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-order">Order by</label>
+                            <input type="text" id="filter-order" name="order" value="created_at DESC">
+                        </div>
+                        <div class="audit-filter-actions">
+                            <button type="submit" class="btn-primary">Apply filters</button>
+                            <button type="button" class="btn-text" id="reset-filters">Reset</button>
+                            <button type="button" class="btn-text" id="refresh-logs">Refresh</button>
+                            <button type="button" class="btn-text" id="toggle-tail">Toggle tail</button>
+                        </div>
+                    </form>
+
+                    <div id="audit-search-info" class="search-info" style="display: none;"></div>
+
+                    <div class="table-wrapper">
+                        <table class="modern-table audit-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Timestamp</th>
+                                    <th>Severity</th>
+                                    <th>Event</th>
+                                    <th>Actor</th>
+                                    <th>Target</th>
+                                    <th>Details</th>
+                                    <th>User Agent</th>
+                                    <th>Integrity</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="audit-table-body">
+                                <tr>
+                                    <td colspan="10" class="audit-empty">Loading audit events...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="pagination">
+                        <div class="page-info" id="audit-page-info">No events loaded</div>
+                        <div class="page-controls">
+                            <button type="button" class="page-btn" id="audit-prev-page" aria-label="Previous page">&lsaquo;</button>
+                            <span class="page-number" id="audit-page-number">Page 1</span>
+                            <button type="button" class="page-btn" id="audit-next-page" aria-label="Next page">&rsaquo;</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Live tail -->
+            <section class="admin-section" id="tail-section">
+                <div class="content-card">
+                    <div class="card-header">
+                        <h3>Live Tail</h3>
+                        <span class="audit-tail-hint">Raw text lines as the platform emits them (AV-08)</span>
+                    </div>
+                    <pre id="audit-tail-output" class="audit-tail-output">Tail is off.</pre>
+                </div>
+            </section>
+
+            <!-- Add note -->
+            <section class="admin-section" id="note-section">
+                <div class="content-card">
+                    <div class="section-header">
+                        <h2>Add Audit Note</h2>
+                        <p class="section-subtitle">The client authors event_type, severity and actor_username, and details is rendered as HTML (AV-05, AV-09)</p>
+                    </div>
+                    <form id="audit-note-form" class="settings-form">
+                        <div class="form-group">
+                            <label for="note-details">Details</label>
+                            <textarea id="note-details" name="details" rows="4" placeholder="Note body, stored verbatim"></textarea>
+                        </div>
+                        <div class="audit-note-grid">
+                            <div class="form-group">
+                                <label for="note-event-type">Event type</label>
+                                <input type="text" id="note-event-type" name="event_type" value="AUDIT_NOTE_ADDED">
+                            </div>
+                            <div class="form-group">
+                                <label for="note-severity">Severity</label>
+                                <select id="note-severity" name="severity">
+                                    {% for severity in severities %}
+                                    <option value="{{ severity }}" {% if severity == 'INFO' %}selected{% endif %}>{{ severity }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="note-actor">Actor username override</label>
+                                <input type="text" id="note-actor" name="actor_username" placeholder="defaults to the authenticated user">
+                            </div>
+                            <div class="form-group">
+                                <label for="note-target">Target</label>
+                                <input type="text" id="note-target" name="target" placeholder="log:1">
+                            </div>
+                        </div>
+                        <button type="submit" class="btn-primary">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                            Add note
+                        </button>
+                    </form>
+                </div>
+            </section>
+
+            <!-- Export / purge -->
+            <section class="admin-section" id="export-section">
+                <div class="content-card">
+                    <div class="section-header">
+                        <h2>Export &amp; Purge</h2>
+                        <p class="section-subtitle">filename is resolved without a whitelist and the purge erases its own record (AV-04, AV-10)</p>
+                    </div>
+
+                    <form id="audit-export-form" class="audit-export-grid">
+                        <div class="form-group">
+                            <label for="export-format">Format</label>
+                            <input type="text" id="export-format" name="format" value="csv">
+                        </div>
+                        <div class="form-group">
+                            <label for="export-filename">Filename</label>
+                            <input type="text" id="export-filename" name="filename" value="audit_export.csv">
+                        </div>
+                        <button type="submit" class="btn-primary">Export trail</button>
+                    </form>
+
+                    <form id="audit-purge-form" class="audit-export-grid audit-purge-form">
+                        <div class="form-group">
+                            <label for="purge-before">Delete entries before</label>
+                            <input type="text" id="purge-before" name="before" placeholder="2026-01-01 00:00:00">
+                        </div>
+                        <div class="form-group">
+                            <label for="purge-event-type">Event type</label>
+                            <select id="purge-event-type" name="event_type">
+                                <option value="">Any event type</option>
+                                {% for event_type in event_types %}
+                                <option value="{{ event_type }}">{{ event_type }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="form-group audit-checkbox-group">
+                            <label for="purge-all">
+                                <input type="checkbox" id="purge-all" name="all">
+                                Purge the entire trail
+                            </label>
+                        </div>
+                        <button type="submit" class="btn-text btn-delete">Purge trail</button>
+                    </form>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Entry detail modal -->
+    <div id="audit-modal" class="user-modal" style="display: none;">
+        <div class="user-modal-backdrop" onclick="closeAuditModal()"></div>
+        <div class="user-modal-content">
+            <div class="user-modal-header">
+                <h2>Audit Entry</h2>
+                <button class="user-modal-close" onclick="closeAuditModal()" aria-label="Close modal">&times;</button>
+            </div>
+            <div id="audit-modal-message" class="user-modal-message" style="display: none;"></div>
+            <div class="user-modal-body" id="audit-modal-body">
+                Loading audit entry...
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='audit.js') }}"></script>
+</body>
+</html>

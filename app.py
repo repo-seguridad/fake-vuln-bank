@@ -21,6 +21,7 @@ from database import (
 from ai_agent_deepseek import ai_agent
 from transaction_graphql import transaction_graphql_schema
 from merchant_payments import init_merchant_payment_routes
+from audit_log import init_audit_routes, record_event
 from username_validation import username_validation_error
 from exposed_env_files import EXPOSED_ENV_FILES
 import time
@@ -70,6 +71,7 @@ swaggerui_blueprint = get_swaggerui_blueprint(
 app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
 init_auth_routes(app)
 init_merchant_payment_routes(app)
+init_audit_routes(app)
 
 # Hardcoded secret key (CWE-798)
 app.secret_key = "secret123"
@@ -393,7 +395,15 @@ def register():
             response = jsonify(sensitive_data)
             response.headers['X-Debug-Info'] = str(sensitive_data['debug_data'])
             response.headers['X-User-Info'] = f"id={user[0]};admin={user[4]};balance={user[3]}"
-            
+
+            record_event(
+                'ACCOUNT_CREATED',
+                action='register',
+                target=user[1],
+                details=f"account_number={user[2]} is_admin={user[4]}",
+                actor={'user_id': user[0], 'username': user[1]}
+            )
+
             return response
                 
         except Exception as e:
@@ -429,6 +439,15 @@ def login():
                 print(f"Debug - Found user: {user}")  # Debug print
 
                 if len(user) > 9 and user[9]:
+                    record_event(
+                        'LOGIN_FAILED',
+                        severity='WARNING',
+                        action='login',
+                        target=user[1],
+                        details='account suspended',
+                        result='DENIED',
+                        actor={'user_id': user[0], 'username': user[1]}
+                    )
                     return jsonify({
                         'status': 'error',
                         'message': suspension_message
@@ -437,7 +456,15 @@ def login():
                 # Generate JWT token instead of using session
                 token = generate_token(user[0], user[1], user[5])
                 print(f"Debug - Generated token: {token}")  # Debug print
-                
+
+                record_event(
+                    'LOGIN_SUCCESS',
+                    action='login',
+                    target=user[1],
+                    details=f"account_number={user[3]} is_admin={user[5]}",
+                    actor={'user_id': user[0], 'username': user[1]}
+                )
+
                 response = make_response(jsonify({
                     'status': 'success',
                     'message': 'Login successful',
@@ -457,6 +484,15 @@ def login():
                 return response
             
             # Vulnerability: Username enumeration
+            record_event(
+                'LOGIN_FAILED',
+                severity='WARNING',
+                action='login',
+                target=username,
+                details='invalid credentials',
+                result='DENIED'
+            )
+
             return jsonify({
                 'status': 'error',
                 'message': 'Invalid credentials',
@@ -593,7 +629,16 @@ def transfer(current_user):
                     )
                 ]
                 execute_transaction(queries)
-                
+
+                record_event(
+                    'TRANSFER_INITIATED',
+                    action='transfer',
+                    target=to_account,
+                    details=f"from={from_account} amount={amount}",
+                    result='SUCCESS',
+                    actor={'user_id': current_user.get('user_id'), 'username': current_user.get('username')}
+                )
+
                 return jsonify({
                     'status': 'success',
                     'message': 'Transfer Completed',
@@ -606,6 +651,16 @@ def transfer(current_user):
                     'message': str(e)
                 }), 500
         else:
+            record_event(
+                'TRANSFER_INITIATED',
+                severity='WARNING',
+                action='transfer',
+                target=to_account,
+                details=f"from={from_account} amount={amount}",
+                result='DENIED',
+                actor={'user_id': current_user.get('user_id'), 'username': current_user.get('username')}
+            )
+
             return jsonify({
                 'status': 'error',
                 'message': 'Insufficient funds'
@@ -782,6 +837,14 @@ def update_bio(current_user):
             "UPDATE users SET bio = %s WHERE id = %s",
             (bio, current_user['user_id']),
             fetch=False
+        )
+
+        record_event(
+            'PROFILE_UPDATED',
+            action='update_bio',
+            target=current_user.get('username'),
+            details=f"bio_length={len(bio)}",
+            actor={'user_id': current_user.get('user_id'), 'username': current_user.get('username')}
         )
 
         return jsonify({
@@ -961,7 +1024,15 @@ def request_loan(current_user):
             (current_user['user_id'], amount),
             fetch=False
         )
-        
+
+        record_event(
+            'LOAN_REQUESTED',
+            action='request_loan',
+            target=current_user.get('username'),
+            details=f"amount={amount}",
+            actor={'user_id': current_user.get('user_id'), 'username': current_user.get('username')}
+        )
+
         return jsonify({
             'status': 'success',
             'message': 'Loan requested successfully'
@@ -1056,7 +1127,15 @@ def approve_loan(current_user, loan_id):
                 )
             ]
             execute_transaction(queries)
-            
+
+            record_event(
+                'LOAN_APPROVED',
+                action='approve_loan',
+                target=f"loan:{loan_id}",
+                details=f"user_id={loan[1]} amount={float(loan_amount)}",
+                actor={'user_id': current_user.get('user_id'), 'username': current_user.get('username')}
+            )
+
             return jsonify({
                 'status': 'success',
                 'message': 'Loan approved successfully',
@@ -1099,15 +1178,32 @@ def delete_account(current_user, user_id):
         return jsonify({'error': 'Access Denied'}), 403
     
     try:
+        # Read the identity before the delete, because afterwards the row is gone
+        # and the audit entry would have nothing but a numeric id to point at.
+        existing_user = execute_query(
+            "SELECT username, account_number FROM users WHERE id = %s",
+            (user_id,)
+        )
+        removed_username = existing_user[0][0] if existing_user else None
+        removed_account_number = existing_user[0][1] if existing_user else None
+
         # Vulnerability: No user confirmation required
-        # Vulnerability: No audit logging
         # Vulnerability: No backup creation
         execute_query(
             "DELETE FROM users WHERE id = %s",
             (user_id,),
             fetch=False
         )
-        
+
+        record_event(
+            'ACCOUNT_DELETED',
+            severity='WARNING',
+            action='delete_account',
+            target=f"user:{user_id}",
+            details=f"username={removed_username} account_number={removed_account_number}",
+            actor={'user_id': current_user.get('user_id'), 'username': current_user.get('username')}
+        )
+
         return jsonify({
             'status': 'success',
             'message': 'Account deleted successfully',
@@ -1158,6 +1254,15 @@ def toggle_account_suspension(current_user, user_id):
             fetch=False
         )
 
+        record_event(
+            'ACCOUNT_SUSPENDED' if new_status else 'ACCOUNT_UNSUSPENDED',
+            severity='WARNING' if new_status else 'NOTICE',
+            action='toggle_suspension',
+            target=f"user:{user_id}",
+            details=f"username={user[1]} is_suspended={new_status}",
+            actor={'user_id': current_user.get('user_id'), 'username': current_user.get('username')}
+        )
+
         return jsonify({
             'status': 'success',
             'message': f"Account {'suspended' if new_status else 'unsuspended'} successfully",
@@ -1203,7 +1308,16 @@ def create_admin(current_user):
             f"INSERT INTO users (username, password, account_number, is_admin) VALUES ('{username}', '{password}', '{account_number}', true)",
             fetch=False
         )
-        
+
+        record_event(
+            'ADMIN_ACCOUNT_CREATED',
+            severity='WARNING',
+            action='create_admin',
+            target=username,
+            details=f"account_number={account_number}",
+            actor={'user_id': current_user.get('user_id'), 'username': current_user.get('username')}
+        )
+
         return jsonify({
             'status': 'success',
             'message': 'Admin created successfully'

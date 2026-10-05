@@ -323,6 +323,40 @@ def init_db():
                 ON CONFLICT DO NOTHING
             """)
 
+            # Create audit_log table (Logs/Auditoria module)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id SERIAL PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    severity TEXT DEFAULT 'INFO',
+                    actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    actor_username TEXT,  -- Denormalized on purpose: survives account deletion
+                    action TEXT,
+                    target TEXT,
+                    details TEXT,  -- Vulnerability: Attacker-controlled JSON stored verbatim
+                    ip_address TEXT,  -- Vulnerability: X-Forwarded-For trusted, never sanitized
+                    user_agent TEXT,  -- Vulnerability: Raw header, log injection sink
+                    referer TEXT,
+                    request_id TEXT,
+                    http_method TEXT,
+                    endpoint TEXT,
+                    result TEXT DEFAULT 'SUCCESS',
+                    signature TEXT,  -- Seam: never computed, integrity checks are cosmetic
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Vulnerability: No indexes on audit_log. The console scans grow with
+            # every event, so filters and the tail degrade without bound.
+            #
+            # Vulnerability: No CHECK constraints, no immutability trigger and no
+            # REVOKE. Anything that reaches UPDATE/DELETE can rewrite or erase the
+            # trail, and record_event() cannot stop it.
+            #
+            # Seam for Phase 3 remediation: add CHECK on severity, an immutability
+            # trigger, revoke UPDATE/DELETE from the application role, populate
+            # signature with HMAC-SHA256 and index the hot filter columns.
+
             # Stored XSS is intentional in VulnBank. These internal timestamps do
             # not sanitize or block payloads; they only let the cleanup worker
             # neutralize HTML-like values after the configured testing window.
