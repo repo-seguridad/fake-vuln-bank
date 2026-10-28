@@ -225,7 +225,7 @@
                                 <tr>
                                     <td>
                                         <div class="user-cell">
-                                            <span class="user-username">{{ user[1]|safe }}</span>
+                                            <span class="user-username">{{ user[1] }}</span>
                                             <span class="user-id">ID: {{ user[0] }}</span>
                                         </div>
                                     </td>
@@ -815,7 +815,7 @@
                 </div>
                 <div class="user-detail-row">
                     <span class="user-detail-label">Username:</span>
-                    <span class="user-detail-value">${user.username || 'N/A'}</span>
+                    <span class="user-detail-value">${escapeHtml(user.username || 'N/A')}</span>
                 </div>
                 <div class="user-detail-row">
                     <span class="user-detail-label">Account Number:</span>
@@ -833,7 +833,7 @@
                     <span class="user-detail-label">Bio:</span>
                 </div>
                 <div class="user-detail-bio">
-                    ${user.bio ? user.bio : '<em style="color: var(--text-4);">No bio provided</em>'}
+                    ${user.bio ? escapeHtml(user.bio) : '<em style="color: var(--text-4);">No bio provided</em>'}
                 </div>
                 <div class="user-modal-actions">
                     <form class="modal-delete-form" data-user-id="${user.id}">
