@@ -32,6 +32,7 @@ import requests
 from urllib.parse import urlparse
 import socket
 import ipaddress
+import uuid
 import platform
 
 # Load environment variables
@@ -733,18 +734,24 @@ def upload_profile_picture(current_user):
         return jsonify({'error': 'No file selected'}), 400
         
     try:
-        # Vulnerability: No file type validation
-        # Vulnerability: Using user-controlled filename
-        # Vulnerability: No file size check
-        # Vulnerability: No content-type validation
-        filename = secure_filename(file.filename)
-        
-        # Add random prefix to prevent filename collisions
-        filename = f"{random.randint(1, 1000000)}_{filename}"
-        
-        # Vulnerability: Path traversal possible if filename contains ../
+        # Fix (M2-R05): validate extension and MIME type, cap the size, and use a
+        # server-generated random filename so no active content or oversized file
+        # can be stored or served from the uploads directory.
+        ALLOWED_EXT = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+        ALLOWED_MIME = {'image/png', 'image/jpeg', 'image/gif', 'image/webp'}
+        ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+        if ext not in ALLOWED_EXT or file.mimetype not in ALLOWED_MIME:
+            return jsonify({'status': 'error', 'message': 'Only PNG/JPEG/GIF/WebP images are allowed'}), 400
+
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        file.seek(0)
+        if size > 2 * 1024 * 1024:
+            return jsonify({'status': 'error', 'message': 'Image is too large (max 2 MB)'}), 400
+
+        filename = f"{uuid.uuid4().hex}.{ext}"
         file_path = os.path.join(UPLOAD_FOLDER, filename)
-        
+
         file.save(file_path)
         
         # Update database with just the filename
