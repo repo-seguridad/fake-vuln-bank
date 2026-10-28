@@ -37,7 +37,9 @@ load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)
+# Fix (M1-R11): restrict CORS to an explicit allowlist instead of allowing any origin.
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5000").split(",") if o.strip()]
+CORS(app, origins=_cors_origins, supports_credentials=True)
 
 # Initialize database connection pool
 init_connection_pool()
@@ -74,8 +76,8 @@ init_auth_routes(app)
 init_merchant_payment_routes(app)
 init_audit_routes(app)
 
-# Hardcoded secret key (CWE-798)
-app.secret_key = "secret123"
+# Fix (M1-R09): Flask secret key is loaded from the environment, never hardcoded.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_urlsafe(64)
 
 # Rate limiting configuration
 RATE_LIMIT_WINDOW = 3 * 60 * 60  # 3 hours in seconds
@@ -859,15 +861,8 @@ def update_bio(current_user):
             'message': str(e)
         }), 500
 
-# Sensitive environment files exposed from the web root
-@app.route('/.env', methods=['GET'])
-@app.route('/.env.bak', methods=['GET'])
-def exposed_env_file():
-    filename = request.path.lstrip('/')
-    response = make_response(EXPOSED_ENV_FILES[filename], 200)
-    response.mimetype = 'text/plain'
-    response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
-    return response
+# Fix (M1-R09): the /.env and /.env.bak routes that served platform secrets
+# over the web root have been removed. Secrets live only in environment variables.
 
 
 # INTERNAL-ONLY ENDPOINTS FOR SSRF DEMO (INTENTIONALLY SENSITIVE)
@@ -2664,4 +2659,5 @@ def ai_rate_limit_status():
 if __name__ == '__main__':
     init_db()
     # Vulnerability: Debug mode enabled in production
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Fix (M1-R11): debug mode is off by default; enable only via FLASK_DEBUG=true.
+    app.run(host='0.0.0.0', port=5000, debug=os.getenv('FLASK_DEBUG', 'false').lower() == 'true')
