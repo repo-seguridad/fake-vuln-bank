@@ -94,16 +94,9 @@ def token_required(f):
             except IndexError:
                 token = None
                 
-        # Vulnerability: Multiple token locations (token hijacking risk)
-        # Also check query parameters (vulnerable by design)
-        if not token and 'token' in request.args:
-            token = request.args['token']
-            
-        # Also check form data (vulnerable by design)
-        if not token and 'token' in request.form:
-            token = request.form['token']
-            
-        # Also check cookies (vulnerable by design)
+        # Fix (M1-R07): the token is only accepted from the Authorization
+        # header or the HttpOnly cookie, never from the query string or the
+        # form body (which leak it into logs, browser history and Referer).
         if not token and 'token' in request.cookies:
             token = request.cookies['token']
             

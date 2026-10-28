@@ -473,8 +473,14 @@ def login():
                         'login_time': str(datetime.now())
                     }
                 }))
-                # Vulnerability: Cookie without secure flag
-                response.set_cookie('token', token, httponly=True)
+                # Fix (M1-R07): session cookie is HttpOnly + Secure + SameSite=Strict.
+                # Secure can be disabled via COOKIE_SECURE=false for local HTTP testing.
+                response.set_cookie(
+                    'token', token,
+                    httponly=True,
+                    secure=os.getenv('COOKIE_SECURE', 'true').lower() == 'true',
+                    samesite='Strict',
+                )
                 return response
             
             # Vulnerability: Username enumeration
