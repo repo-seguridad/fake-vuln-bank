@@ -425,14 +425,9 @@ def login():
             password = data.get('password')
             suspension_message = 'Your account has been suspended, contact support or walk in to any of our branch to resolve the issue'
             
-            print(f"Login attempt - Username: {username}")  # Debug print
-            
-            # SQL Injection vulnerability (intentionally vulnerable)
-            query = f"SELECT * FROM users WHERE username='{username}' AND password='{password}'"
-            print(f"Debug - Login query: {query}")  # Debug print
-            
-            user = execute_query(query)
-            print(f"Debug - Query result: {user}")  # Debug print
+            # Fix (M1-R01): parameterized query prevents SQL injection in login
+            query = "SELECT * FROM users WHERE username = %s AND password = %s"
+            user = execute_query(query, (username, password))
             
             if user and len(user) > 0:
                 user = user[0]  # Get first row

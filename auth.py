@@ -114,11 +114,11 @@ def init_auth_routes(app):
         if not auth or not auth.get('username') or not auth.get('password'):
             return jsonify({'error': 'Missing credentials'}), 401
             
-        # Vulnerability: SQL Injection still possible here
+        # Fix (M1-R01): parameterized query prevents SQL injection (SQLite uses ? placeholders)
         conn = sqlite3.connect('bank.db')
         c = conn.cursor()
-        query = f"SELECT * FROM users WHERE username='{auth.get('username')}' AND password='{auth.get('password')}'"
-        c.execute(query)
+        query = "SELECT * FROM users WHERE username = ? AND password = ?"
+        c.execute(query, (auth.get('username'), auth.get('password')))
         user = c.fetchone()
         conn.close()
         
