@@ -1848,20 +1848,20 @@ def create_virtual_card(current_user):
         # Vulnerability: Fixed expiry date calculation
         expiry_date = (datetime.now() + timedelta(days=365)).strftime('%m/%y')
         
-        # Vulnerability: SQL injection possible in card_type
         card_type = data.get('card_type', 'standard')
         card_currency = normalize_card_currency(data.get('currency'))
-        
-        # Create virtual card
-        query = f"""
-            INSERT INTO virtual_cards 
+
+        # Fix (M3-R07): parameterized INSERT prevents SQL injection via card_type.
+        query = """
+            INSERT INTO virtual_cards
             (user_id, card_number, cvv, expiry_date, card_limit, card_type, currency)
-            VALUES 
-            ({current_user['user_id']}, '{card_number}', '{cvv}', '{expiry_date}', {card_limit}, '{card_type}', '{card_currency}')
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
-        
-        result = execute_query(query)
+        result = execute_query(
+            query,
+            (current_user['user_id'], card_number, cvv, expiry_date, card_limit, card_type, card_currency),
+        )
         
         if result:
             # Vulnerability: Sensitive data exposure
@@ -1948,16 +1948,14 @@ def get_virtual_cards(current_user):
 @token_required
 def toggle_card_freeze(current_user, card_id):
     try:
-        # Vulnerability: No CSRF protection
-        # Vulnerability: BOLA - no verification if card belongs to user
-        query = f"""
-            UPDATE virtual_cards 
-            SET is_frozen = NOT is_frozen 
-            WHERE id = {card_id}
+        # Fix (M3-R04): only toggle a card that belongs to the authenticated user.
+        query = """
+            UPDATE virtual_cards
+            SET is_frozen = NOT is_frozen
+            WHERE id = %s AND user_id = %s
             RETURNING is_frozen
         """
-        
-        result = execute_query(query)
+        result = execute_query(query, (card_id, current_user['user_id']))
         
         if result:
             return jsonify({
@@ -2018,54 +2016,46 @@ def get_card_transactions(current_user, card_id):
 @token_required
 def update_card_limit(current_user, card_id):
     try:
-        data = request.get_json()
-        
-        # Mass Assignment Vulnerability - Build dynamic query based on all input fields
-        update_fields = []
-        update_values = []
-        updated_fields_list = []  # Store field names in a regular list
-        
-        # Iterate through all fields sent in request
-        # Vulnerability: No whitelist of allowed fields
-        # This allows updating any column including balance
-        for key, value in data.items():
-            # Convert value to float if it's numeric
-            try:
-                value = float(value)
-            except (ValueError, TypeError):
-                value = str(value)
-            
-            # Vulnerability: Direct field name injection
-            update_fields.append(f"{key} = %s")
-            update_values.append(value)
-            updated_fields_list.append(key)  # Add to list instead of dict_keys
-            
-        # Vulnerability: BOLA - no verification if card belongs to user
-        query = f"""
-            UPDATE virtual_cards 
-            SET {', '.join(update_fields)}
-            WHERE id = {card_id}
+        data = request.get_json() or {}
+
+        # Fix (M3-R05): only the card limit may be updated, through a fixed
+        # parameterized query. The client can no longer set current_balance,
+        # user_id or any other column via mass assignment.
+        try:
+            new_limit = Decimal(str(data.get('card_limit')))
+        except (InvalidOperation, TypeError):
+            return jsonify({'status': 'error', 'message': 'Invalid card_limit'}), 400
+        if not new_limit.is_finite() or new_limit < 0 or new_limit > Decimal('1000000'):
+            return jsonify({'status': 'error', 'message': 'card_limit out of range'}), 400
+
+        # Fix (M3-R04): verify the card belongs to the authenticated user.
+        owned = execute_query(
+            "SELECT id FROM virtual_cards WHERE id = %s AND user_id = %s",
+            (card_id, current_user['user_id']),
+        )
+        if not owned:
+            return jsonify({'status': 'error', 'message': 'Card not found'}), 404
+
+        query = """
+            UPDATE virtual_cards
+            SET card_limit = %s
+            WHERE id = %s AND user_id = %s
             RETURNING id, card_limit, current_balance, is_frozen, is_active, card_type, currency
         """
-        
-        result = execute_query(query, tuple(update_values))
-        
+        result = execute_query(query, (new_limit, card_id, current_user['user_id']))
+
         if result:
-            # Vulnerability: Information disclosure - returning all updated fields
             return jsonify({
                 'status': 'success',
                 'message': 'Card updated successfully',
-                'debug_info': {
-                    'updated_fields': updated_fields_list,  # Use list instead of dict_keys
-                    'card_details': {
-                        'id': result[0][0],
-                        'card_limit': float(result[0][1]),
-                        'current_balance': float(result[0][2]),
-                        'is_frozen': result[0][3],
-                        'is_active': result[0][4],
-                        'card_type': result[0][5],
-                        'currency': result[0][6]
-                    }
+                'card_details': {
+                    'id': result[0][0],
+                    'card_limit': float(result[0][1]),
+                    'current_balance': float(result[0][2]),
+                    'is_frozen': result[0][3],
+                    'is_active': result[0][4],
+                    'card_type': result[0][5],
+                    'currency': result[0][6]
                 }
             })
             
@@ -2115,13 +2105,10 @@ def fund_virtual_card(current_user, card_id):
             'exchange_rate': CARD_CURRENCY_RATES[card_currency]['rate']
         }
 
-        # Vulnerability: Mass assignment allows client input to override
-        # internal funding fields such as the exchange rate.
-        for key, value in data.items():
-            funding_context[key] = value
-
+        # Fix (M3-R06): the exchange rate comes only from the server; the client
+        # cannot override it. Only the funding amount is taken from the request.
         usd_amount = float(funding_context.get('amount', 0))
-        exchange_rate = float(funding_context.get('exchange_rate'))
+        exchange_rate = float(funding_context['exchange_rate'])
 
         if usd_amount <= 0:
             return jsonify({
