@@ -559,13 +559,21 @@ def dashboard(current_user):
 
 # Check balance endpoint
 @app.route('/check_balance/<account_number>')
-def check_balance(account_number):
-    # Broken Object Level Authorization (BOLA) vulnerability
-    # No authentication check, anyone can check any account balance
+@token_required
+def check_balance(current_user, account_number):
+    # Fix (M3-R03): require authentication, verify ownership (or admin) and use
+    # a parameterized query. Closes the anonymous BOLA + SQL injection vector.
     try:
-        # Vulnerability: SQL Injection possible
+        owner = execute_query(
+            "SELECT account_number, is_admin FROM users WHERE id = %s",
+            (current_user['user_id'],),
+        )
+        if not owner or (owner[0][0] != account_number and not owner[0][1]):
+            return jsonify({'status': 'error', 'message': 'Forbidden'}), 403
+
         user = execute_query(
-            f"SELECT username, balance FROM users WHERE account_number='{account_number}'"
+            "SELECT username, balance FROM users WHERE account_number = %s",
+            (account_number,),
         )
         
         if user:
@@ -674,12 +682,20 @@ def transfer(current_user):
 
 # Get transaction history endpoint
 @app.route('/transactions/<account_number>')
-def get_transaction_history(account_number):
-    # Vulnerability: No authentication required (BOLA)
-    # Vulnerability: SQL Injection possible
+@token_required
+def get_transaction_history(current_user, account_number):
+    # Fix (M3-R03): require authentication, verify ownership (or admin) and use
+    # a parameterized query.
     try:
-        query = f"""
-            SELECT 
+        owner = execute_query(
+            "SELECT account_number, is_admin FROM users WHERE id = %s",
+            (current_user['user_id'],),
+        )
+        if not owner or (owner[0][0] != account_number and not owner[0][1]):
+            return jsonify({'status': 'error', 'message': 'Forbidden'}), 403
+
+        query = """
+            SELECT
                 id,
                 from_account,
                 to_account,
@@ -687,12 +703,12 @@ def get_transaction_history(account_number):
                 timestamp,
                 transaction_type,
                 description
-            FROM transactions 
-            WHERE from_account='{account_number}' OR to_account='{account_number}'
+            FROM transactions
+            WHERE from_account = %s OR to_account = %s
             ORDER BY timestamp DESC
         """
-        
-        transactions = execute_query(query)
+
+        transactions = execute_query(query, (account_number, account_number))
         
         # Vulnerability: Information disclosure
         transaction_list = [{
@@ -1761,21 +1777,27 @@ def api_v3_reset_password():
 @app.route('/api/transactions', methods=['GET'])
 @token_required
 def api_transactions(current_user):
-    # Vulnerability: No validation of account_number parameter
     account_number = request.args.get('account_number')
-    
+
     if not account_number:
         return jsonify({'error': 'Account number required'}), 400
-        
-    # Vulnerability: SQL Injection
-    query = f"""
-        SELECT * FROM transactions 
-        WHERE from_account='{account_number}' OR to_account='{account_number}'
+
+    # Fix (M3-R03): verify ownership (or admin) and use a parameterized query.
+    owner = execute_query(
+        "SELECT account_number, is_admin FROM users WHERE id = %s",
+        (current_user['user_id'],),
+    )
+    if not owner or (owner[0][0] != account_number and not owner[0][1]):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    query = """
+        SELECT * FROM transactions
+        WHERE from_account = %s OR to_account = %s
         ORDER BY timestamp DESC
     """
-    
+
     try:
-        transactions = execute_query(query)
+        transactions = execute_query(query, (account_number, account_number))
         
         # Convert Decimal objects to float for JSON serialization
         transaction_list = []
