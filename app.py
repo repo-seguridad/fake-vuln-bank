@@ -1124,17 +1124,28 @@ def admin_panel(current_user):
 @app.route('/admin/approve_loan/<int:loan_id>', methods=['POST'])
 @token_required
 def approve_loan(current_user, loan_id):
-    if not current_user.get('is_admin'):
+    # Fix (M3-R08): verify the admin role from the database, not the token claim.
+    admin_row = execute_query(
+        "SELECT is_admin FROM users WHERE id = %s",
+        (current_user.get('user_id'),),
+    )
+    if not admin_row or not admin_row[0][0]:
         return jsonify({'error': 'Access Denied'}), 403
-    
+
     try:
-        # Vulnerability: Race condition in loan approval
-        # Vulnerability: No validation if loan is already approved
         loan = execute_query(
             "SELECT * FROM loans WHERE id = %s",
             (loan_id,)
-        )[0]
-        
+        )
+        if not loan:
+            return jsonify({'status': 'error', 'message': 'Loan not found'}), 404
+        loan = loan[0]
+
+        # Fix (M3-R08): a loan may only be approved once, while it is pending,
+        # so the same loan can no longer be approved repeatedly to mint balance.
+        if loan[3] != 'pending':
+            return jsonify({'status': 'error', 'message': 'Loan is not pending'}), 400
+
         if loan:
             try:
                 loan_amount = parse_positive_loan_amount(loan[2])
@@ -1144,10 +1155,9 @@ def approve_loan(current_user, loan_id):
                     'message': 'Loan amount must be greater than zero'
                 }), 400
 
-            # Vulnerability: No transaction atomicity
             queries = [
                 (
-                    "UPDATE loans SET status='approved' WHERE id = %s",
+                    "UPDATE loans SET status='approved' WHERE id = %s AND status='pending'",
                     (loan_id,)
                 ),
                 (
