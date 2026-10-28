@@ -1,56 +1,55 @@
 from flask import jsonify, request
 import jwt
 import datetime
-import sqlite3  
+import os
+import secrets
+import sqlite3
 from functools import wraps
 
-# Vulnerable JWT implementation with common security issues
+# Fix (M1-R02, M1-R09): secret is loaded from the environment and never
+# hardcoded. If it is missing a strong random one is generated at startup.
+JWT_SECRET = os.environ.get("JWT_SECRET") or secrets.token_urlsafe(64)
 
-# Weak secret key (CWE-326)
-JWT_SECRET = "secret123"
+# Fix (M1-R02): only a safe signing algorithm is allowed; 'none' is rejected.
+ALGORITHMS = ['HS256']
 
-# Vulnerable algorithm selection - allows 'none' algorithm
-ALGORITHMS = ['HS256', 'none']
+# Token lifetime (minutes) so sessions expire (CWE-613).
+TOKEN_TTL_MINUTES = int(os.environ.get("JWT_TTL_MINUTES", "60"))
 
 def generate_token(user_id, username, is_admin=False):
     """
-    Generate a JWT token with weak implementation
-    Vulnerability: No token expiration (CWE-613)
+    Generate a signed JWT token.
+    Fix (M1-R02, M1-R08): the token carries an expiration (exp), issued-at
+    (iat) and a unique id (jti), and is signed with the environment secret.
     """
+    now = datetime.datetime.utcnow()
     payload = {
         'user_id': user_id,
         'username': username,
         'is_admin': is_admin,
-        # Missing 'exp' claim - tokens never expire
-        'iat': datetime.datetime.utcnow()
+        'iat': now,
+        'exp': now + datetime.timedelta(minutes=TOKEN_TTL_MINUTES),
+        'jti': secrets.token_hex(16),
     }
-    
-    # Vulnerability: Using a weak secret key
     token = jwt.encode(payload, JWT_SECRET, algorithm='HS256')
     return token
 
 def verify_token(token):
     """
-    Verify JWT token with multiple vulnerabilities
-    - Accepts 'none' algorithm (CWE-347)
-    - No signature verification in some cases
-    - No expiration check
+    Verify a JWT token.
+    Fix (M1-R02): the signature and expiration are always verified, only
+    HS256 is accepted, and there is no unsigned fallback. Any invalid or
+    expired token is rejected (returns None).
     """
     try:
-        # Vulnerability: Accepts any algorithm, including 'none'
-        payload = jwt.decode(token, JWT_SECRET, algorithms=ALGORITHMS)
+        payload = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=ALGORITHMS,
+            options={'require': ['exp', 'iat']},
+        )
         return payload
-    except jwt.exceptions.InvalidSignatureError:
-        # Vulnerability: Still accepts tokens in some error cases
-        try:
-            # Second try without verification
-            payload = jwt.decode(token, options={'verify_signature': False})
-            return payload
-        except:
-            return None
-    except Exception as e:
-        # Vulnerability: Detailed error exposure in logs
-        print(f"Token verification error: {str(e)}")
+    except jwt.PyJWTError:
         return None
 
 
