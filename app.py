@@ -77,6 +77,30 @@ init_audit_routes(app)
 # Hardcoded secret key (CWE-798)
 app.secret_key = "secret123"
 
+
+def admin_required(f):
+    """
+    Fix (M2-R07): authorize admin actions by reading the role and status from
+    the database on every request, instead of trusting the is_admin claim of
+    the (forgeable) token. A suspended or non-admin user is denied.
+    """
+    @wraps(f)
+    @token_required
+    def decorated(current_user, *args, **kwargs):
+        rows = execute_query(
+            "SELECT is_admin, is_suspended FROM users WHERE id = %s",
+            (current_user.get('user_id'),),
+        )
+        if not rows:
+            return jsonify({'error': 'Forbidden'}), 403
+        is_admin, is_suspended = rows[0][0], rows[0][1]
+        if is_suspended:
+            return jsonify({'error': 'Account suspended'}), 403
+        if not is_admin:
+            return jsonify({'error': 'Admin privilege required'}), 403
+        return f(current_user, *args, **kwargs)
+    return decorated
+
 # Rate limiting configuration
 RATE_LIMIT_WINDOW = 3 * 60 * 60  # 3 hours in seconds
 UNAUTHENTICATED_LIMIT = 5  # requests per IP per window
@@ -1033,10 +1057,8 @@ def request_loan(current_user):
 
 # Hidden admin endpoint (security through obscurity)
 @app.route('/sup3r_s3cr3t_admin')
-@token_required
+@admin_required
 def admin_panel(current_user):
-    if not current_user['is_admin']:
-        return "Access Denied", 403
 
     # Basic pagination to avoid rendering every user at once
     page = max(request.args.get('page', default=1, type=int), 1)
@@ -1158,11 +1180,8 @@ def approve_loan(current_user, loan_id):
 
 # Delete account endpoint
 @app.route('/admin/delete_account/<int:user_id>', methods=['POST'])
-@token_required
+@admin_required
 def delete_account(current_user, user_id):
-    if not current_user.get('is_admin'):
-        return jsonify({'error': 'Access Denied'}), 403
-    
     try:
         # Read the identity before the delete, because afterwards the row is gone
         # and the audit entry would have nothing but a numeric id to point at.
@@ -1208,11 +1227,8 @@ def delete_account(current_user, user_id):
         }), 500
 
 @app.route('/admin/toggle_suspension/<int:user_id>', methods=['POST'])
-@token_required
+@admin_required
 def toggle_account_suspension(current_user, user_id):
-    if not current_user.get('is_admin'):
-        return jsonify({'error': 'Access Denied'}), 403
-
     try:
         if user_id == current_user.get('user_id'):
             return jsonify({
@@ -1269,11 +1285,8 @@ def toggle_account_suspension(current_user, user_id):
 
 # Create admin endpoint
 @app.route('/admin/create_admin', methods=['POST'])
-@token_required
+@admin_required
 def create_admin(current_user):
-    if not current_user.get('is_admin'):
-        return jsonify({'error': 'Access Denied'}), 403
-    
     try:
         data = request.get_json()
         username = data.get('username')
@@ -1287,11 +1300,10 @@ def create_admin(current_user):
                 'message': validation_error
             }), 400
         
-        # Vulnerability: SQL injection possible
-        # Vulnerability: No password complexity requirements
-        # Vulnerability: No account number uniqueness check
+        # Fix (M2-R08): parameterized INSERT and hashed password.
         execute_query(
-            f"INSERT INTO users (username, password, account_number, is_admin) VALUES ('{username}', '{password}', '{account_number}', true)",
+            "INSERT INTO users (username, password, account_number, is_admin) VALUES (%s, %s, %s, true)",
+            (username, generate_password_hash(password), account_number),
             fetch=False
         )
 
@@ -1566,10 +1578,18 @@ def api_v3_forgot_password():
 @app.route('/api/v3/user/<int:user_id>', methods=['GET'])
 @token_required
 def api_v3_get_user(current_user, user_id):
-    """Get user details by ID - Vulnerable to IDOR"""
+    """Get user details by ID."""
     try:
-        # Vulnerability: No authorization check - any user can fetch any user's details
-        # This is an IDOR (Insecure Direct Object Reference) vulnerability
+        # Fix (M2-R02): a user may only read their own record; administrators
+        # may read any. This closes the IDOR enumeration of every account.
+        if user_id != current_user.get('user_id'):
+            admin_row = execute_query(
+                "SELECT is_admin FROM users WHERE id = %s",
+                (current_user.get('user_id'),),
+            )
+            if not admin_row or not admin_row[0][0]:
+                return jsonify({'status': 'error', 'message': 'Forbidden'}), 403
+
         user = execute_query(
             "SELECT * FROM users WHERE id = %s",
             (user_id,)
