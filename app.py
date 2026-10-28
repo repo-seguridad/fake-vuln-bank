@@ -5,6 +5,7 @@ import random
 import string
 import html
 import os
+import secrets
 from dotenv import load_dotenv
 from auth import generate_token, token_required, verify_token, init_auth_routes, hash_password, verify_password
 import auth
@@ -1341,13 +1342,13 @@ def forgot_password():
             
             # Vulnerability: SQL Injection possible
             user = execute_query(
-                f"SELECT id FROM users WHERE username='{username}'"
+                "SELECT id FROM users WHERE username = %s", (username,)
             )
             
             if user:
                 # Weak reset pin logic (CWE-330)
                 # Using only 3 digits makes it easily guessable
-                reset_pin = str(random.randint(100, 999))
+                reset_pin = secrets.token_urlsafe(32)  # Fix (M1-R04): strong, non-guessable reset token
                 
                 # Store the reset PIN in database (in plaintext - CWE-319)
                 execute_query(
@@ -1363,8 +1364,8 @@ def forgot_password():
                     'debug_info': {  # Vulnerability: Information disclosure
                         'timestamp': str(datetime.now()),
                         'username': username,
-                        'pin_length': len(reset_pin),
-                        'pin': reset_pin  # Intentionally exposing pin for learning
+                        # Fix (M1-R04): the reset token is never returned in the response
+                        'note': 'if the account exists, a reset link was sent'  # Fix (M1-R04)
                     }
                 })
             else:
@@ -1440,13 +1441,13 @@ def api_v1_forgot_password():
         
         # Vulnerability: SQL Injection possible
         user = execute_query(
-            f"SELECT id FROM users WHERE username='{username}'"
+            "SELECT id FROM users WHERE username = %s", (username,)
         )
         
         if user:
             # Weak reset pin logic (CWE-330)
             # Using only 3 digits makes it easily guessable
-            reset_pin = str(random.randint(100, 999))
+            reset_pin = secrets.token_urlsafe(32)  # Fix (M1-R04): strong, non-guessable reset token
             
             # Store the reset PIN in database (in plaintext - CWE-319)
             execute_query(
@@ -1462,8 +1463,8 @@ def api_v1_forgot_password():
                 'debug_info': {  # Vulnerability: Information disclosure
                     'timestamp': str(datetime.now()),
                     'username': username,
-                    'pin_length': len(reset_pin),
-                    'pin': reset_pin  # Intentionally exposing pin for learning
+                    # Fix (M1-R04): the reset token is never returned in the response
+                    'note': 'if the account exists, a reset link was sent'  # Fix (M1-R04)
                 }
             })
         else:
@@ -1490,12 +1491,12 @@ def api_v2_forgot_password():
         
         # Vulnerability: SQL Injection still possible
         user = execute_query(
-            f"SELECT id FROM users WHERE username='{username}'"
+            "SELECT id FROM users WHERE username = %s", (username,)
         )
         
         if user:
             # Weak reset pin logic (CWE-330) - still using 3 digits
-            reset_pin = str(random.randint(100, 999))
+            reset_pin = secrets.token_urlsafe(32)  # Fix (M1-R04): strong, non-guessable reset token
             
             # Store the reset PIN in database (in plaintext - CWE-319)
             execute_query(
@@ -1538,12 +1539,12 @@ def api_v3_forgot_password():
         
         # Vulnerability: SQL Injection still possible
         user = execute_query(
-            f"SELECT id FROM users WHERE username='{username}'"
+            "SELECT id FROM users WHERE username = %s", (username,)
         )
         
         if user:
             # Weak reset pin logic (CWE-330) - now 4 digits but still guessable
-            reset_pin = str(random.randint(1000, 9999))
+            reset_pin = secrets.token_urlsafe(32)  # Fix (M1-R04): strong, non-guessable reset token
             
             # Store the reset PIN in database (in plaintext - CWE-319)
             execute_query(
