@@ -600,22 +600,35 @@ def check_balance(current_user, account_number):
 def transfer(current_user):
     try:
         data = request.get_json()
-        # Vulnerability: No input validation on amount
-        # Vulnerability: Negative amounts allowed
-        amount = float(data.get('amount'))
         to_account = data.get('to_account')
-        
+
+        # Fix (M3-R01): validate the amount is a positive, finite number within a
+        # sane range. No negative or zero transfers are accepted.
+        try:
+            amount = Decimal(str(data.get('amount')))
+        except (InvalidOperation, TypeError):
+            return jsonify({'status': 'error', 'message': 'Invalid amount'}), 400
+        if not amount.is_finite() or amount <= 0 or amount > Decimal('1000000'):
+            return jsonify({'status': 'error', 'message': 'Amount must be between 0 and 1,000,000'}), 400
+        amount = amount.quantize(Decimal('0.01'))
+
         # Get sender's account number
-        # Race condition vulnerability in checking balance
         sender_data = execute_query(
             "SELECT account_number, balance FROM users WHERE id = %s",
             (current_user['user_id'],)
         )[0]
-        
+
         from_account = sender_data[0]
-        balance = float(sender_data[1])
-        
-        if balance >= abs(amount):  # Check against absolute value of amount
+        balance = Decimal(str(sender_data[1]))
+
+        # Fix (M3-R01): the destination must exist and differ from the sender.
+        if to_account == from_account:
+            return jsonify({'status': 'error', 'message': 'Cannot transfer to the same account'}), 400
+        dest = execute_query("SELECT account_number FROM users WHERE account_number = %s", (to_account,))
+        if not dest:
+            return jsonify({'status': 'error', 'message': 'Destination account does not exist'}), 400
+
+        if balance >= amount:
             try:
                 # Vulnerability: Negative transfers possible
                 # Vulnerability: No transaction atomicity
@@ -650,7 +663,7 @@ def transfer(current_user):
                 return jsonify({
                     'status': 'success',
                     'message': 'Transfer Completed',
-                    'new_balance': balance - amount
+                    'new_balance': float(balance - amount)
                 })
                 
             except Exception as e:
