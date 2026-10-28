@@ -6,7 +6,7 @@ import string
 import html
 import os
 from dotenv import load_dotenv
-from auth import generate_token, token_required, verify_token, init_auth_routes
+from auth import generate_token, token_required, verify_token, init_auth_routes, hash_password, verify_password
 import auth
 from werkzeug.utils import secure_filename 
 from flask_swagger_ui import get_swaggerui_blueprint
@@ -426,12 +426,12 @@ def login():
             suspension_message = 'Your account has been suspended, contact support or walk in to any of our branch to resolve the issue'
             
             # Fix (M1-R01): parameterized query prevents SQL injection in login
-            query = "SELECT * FROM users WHERE username = %s AND password = %s"
-            user = execute_query(query, (username, password))
-            
-            if user and len(user) > 0:
-                user = user[0]  # Get first row
-                print(f"Debug - Found user: {user}")  # Debug print
+            # Fix (M1-R03): fetch by username and verify the stored password hash
+            query = "SELECT * FROM users WHERE username = %s"
+            rows = execute_query(query, (username,))
+
+            if rows and len(rows) > 0 and verify_password(password, rows[0][2]):
+                user = rows[0]  # Get first row
 
                 if len(user) > 9 and user[9]:
                     record_event(
@@ -450,7 +450,6 @@ def login():
                 
                 # Generate JWT token instead of using session
                 token = generate_token(user[0], user[1], user[5])
-                print(f"Debug - Generated token: {token}")  # Debug print
 
                 record_event(
                     'LOGIN_SUCCESS',
@@ -1400,7 +1399,7 @@ def reset_password():
                 # Vulnerability: No password history check
                 execute_query(
                     "UPDATE users SET password = %s, reset_pin = NULL WHERE username = %s",
-                    (new_password, username),
+                    (hash_password(new_password), username),
                     fetch=False
                 )
                 
@@ -1629,7 +1628,7 @@ def api_v1_reset_password():
             # Vulnerability: No password history check
             execute_query(
                 "UPDATE users SET password = %s, reset_pin = NULL WHERE username = %s",
-                (new_password, username),
+                (hash_password(new_password), username),
                 fetch=False
             )
             
@@ -1686,7 +1685,7 @@ def api_v2_reset_password():
             # Vulnerability: No password history check
             execute_query(
                 "UPDATE users SET password = %s, reset_pin = NULL WHERE username = %s",
-                (new_password, username),
+                (hash_password(new_password), username),
                 fetch=False
             )
             
@@ -1732,7 +1731,7 @@ def api_v3_reset_password():
         if user:
             execute_query(
                 "UPDATE users SET password = %s, reset_pin = NULL WHERE username = %s",
-                (new_password, username),
+                (hash_password(new_password), username),
                 fetch=False
             )
             

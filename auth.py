@@ -16,6 +16,30 @@ ALGORITHMS = ['HS256']
 # Token lifetime (minutes) so sessions expire (CWE-613).
 TOKEN_TTL_MINUTES = int(os.environ.get("JWT_TTL_MINUTES", "60"))
 
+from werkzeug.security import generate_password_hash, check_password_hash
+
+
+def hash_password(plain_password):
+    """
+    Fix (M1-R03): store passwords only as a salted hash (never plaintext).
+    """
+    return generate_password_hash(plain_password)
+
+
+def verify_password(plain_password, stored_value):
+    """
+    Verify a password against the stored value.
+    Fix (M1-R03): compares against the salted hash. Legacy plaintext rows
+    (pre-migration) are still accepted so the app keeps working, but new and
+    reset passwords are always hashed.
+    """
+    if not stored_value:
+        return False
+    if stored_value.startswith(("pbkdf2:", "scrypt:", "argon2")):
+        return check_password_hash(stored_value, plain_password)
+    # Legacy plaintext fallback (constant-time compare)
+    return secrets.compare_digest(str(stored_value), str(plain_password))
+
 def generate_token(user_id, username, is_admin=False):
     """
     Generate a signed JWT token.
