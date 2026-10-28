@@ -30,6 +30,8 @@ from functools import wraps
 from collections import defaultdict
 import requests
 from urllib.parse import urlparse
+import socket
+import ipaddress
 import platform
 
 # Load environment variables
@@ -779,7 +781,34 @@ def upload_profile_picture(current_user):
             'file_path': file_path  # Vulnerability: Information disclosure
         }), 500
 
-# Upload profile picture by URL (Intentionally Vulnerable to SSRF)
+def _is_blocked_host(host):
+    """Fix (M2-R06): resolve the host and block loopback, private, link-local,
+    reserved, multicast and unspecified addresses (SSRF targets)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return True  # unresolvable host -> block
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return True
+    return False
+
+
+def validate_import_url(url):
+    """Return an error message if the URL must not be fetched, else None."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        return 'Only http/https URLs are allowed'
+    if not parsed.hostname:
+        return 'Invalid URL host'
+    if _is_blocked_host(parsed.hostname):
+        return 'URL host is not allowed'
+    return None
+
+
+# Upload profile picture by URL (SSRF-hardened)
 @app.route('/upload_profile_picture_url', methods=['POST'])
 @token_required
 def upload_profile_picture_url(current_user):
@@ -790,14 +819,21 @@ def upload_profile_picture_url(current_user):
         if not image_url:
             return jsonify({'status': 'error', 'message': 'image_url is required'}), 400
 
-        # Vulnerabilities:
-        # - No URL scheme/host allowlist (SSRF)
-        # - SSL verification disabled
-        # - Follows redirects
-        # - No content-type or size validation
-        resp = requests.get(image_url, timeout=10, allow_redirects=True, verify=False)
-        if resp.status_code >= 400:
-            return jsonify({'status': 'error', 'message': f'Failed to fetch URL: HTTP {resp.status_code}'}), 400
+        # Fix (M2-R06): validate the URL before fetching to prevent SSRF.
+        url_error = validate_import_url(image_url)
+        if url_error:
+            return jsonify({'status': 'error', 'message': url_error}), 400
+
+        # Do not follow redirects (they could point back to internal hosts),
+        # verify TLS, and reject non-image or oversized responses.
+        resp = requests.get(image_url, timeout=10, allow_redirects=False, verify=True)
+        if not (200 <= resp.status_code < 300):
+            return jsonify({'status': 'error', 'message': 'Failed to fetch URL'}), 400
+        if not resp.headers.get('Content-Type', '').startswith('image/'):
+            return jsonify({'status': 'error', 'message': 'URL did not return an image'}), 400
+        content = resp.content
+        if len(content) > 2 * 1024 * 1024:
+            return jsonify({'status': 'error', 'message': 'Image is too large'}), 400
 
         # Derive filename from URL path (user-controlled)
         parsed = urlparse(image_url)
@@ -806,9 +842,9 @@ def upload_profile_picture_url(current_user):
         filename = f"{random.randint(1, 1000000)}_{filename}"
         file_path = os.path.join(UPLOAD_FOLDER, filename)
 
-        # Save content directly without validation
+        # Save the validated image content.
         with open(file_path, 'wb') as f:
-            f.write(resp.content)
+            f.write(content)
 
         # Store just the filename in DB (same pattern as file upload)
         execute_query(
@@ -821,11 +857,6 @@ def upload_profile_picture_url(current_user):
             'status': 'success',
             'message': 'Profile picture imported from URL',
             'file_path': os.path.join('static/uploads', filename),
-            'debug_info': {  # Information disclosure for learning
-                'fetched_url': image_url,
-                'http_status': resp.status_code,
-                'content_length': len(resp.content)
-            }
         })
     except Exception as e:
         print(f"URL image import error: {str(e)}")
@@ -887,32 +918,9 @@ def _is_loopback_request():
     except Exception:
         return False
 
-@app.route('/internal/secret', methods=['GET'])
-def internal_secret():
-    # Soft internal check: allow only loopback requests
-    if not _is_loopback_request():
-        return jsonify({'error': 'Internal resource. Loopback only.'}), 403
-
-    demo_env = {k: os.getenv(k) for k in [
-        'DB_NAME','DB_USER','DB_PASSWORD','DB_HOST','DB_PORT','DEEPSEEK_API_KEY'
-    ]}
-    # Preview sensitive values (intentionally exposing)
-    if demo_env.get('DEEPSEEK_API_KEY'):
-        demo_env['DEEPSEEK_API_KEY'] = demo_env['DEEPSEEK_API_KEY'][:8] + '...'
-
-    return jsonify({
-        'status': 'internal',
-        'note': 'Intentionally sensitive data for SSRF demonstration',
-        'secrets': {
-            'app_secret_key': app.secret_key,
-            'jwt_secret': getattr(auth, 'JWT_SECRET', None),
-            'env_preview': demo_env
-        },
-        'system': {
-            'platform': platform.platform(),
-            'python_version': platform.python_version()
-        }
-    })
+# Fix (M2-R06): the /internal/secret endpoint that exposed app.secret_key and
+# JWT_SECRET has been removed. It is no longer reachable (also blocked by the
+# SSRF guard above).
 
 @app.route('/internal/config.json', methods=['GET'])
 def internal_config():
