@@ -5,8 +5,9 @@ import random
 import string
 import html
 import os
+import secrets
 from dotenv import load_dotenv
-from auth import generate_token, token_required, verify_token, init_auth_routes
+from auth import generate_token, token_required, verify_token, init_auth_routes, hash_password, verify_password
 import auth
 from werkzeug.utils import secure_filename 
 from flask_swagger_ui import get_swaggerui_blueprint
@@ -36,7 +37,9 @@ load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)
+# Fix (M1-R11): restrict CORS to an explicit allowlist instead of allowing any origin.
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5000").split(",") if o.strip()]
+CORS(app, origins=_cors_origins, supports_credentials=True)
 
 # Initialize database connection pool
 init_connection_pool()
@@ -73,8 +76,8 @@ init_auth_routes(app)
 init_merchant_payment_routes(app)
 init_audit_routes(app)
 
-# Hardcoded secret key (CWE-798)
-app.secret_key = "secret123"
+# Fix (M1-R09): Flask secret key is loaded from the environment, never hardcoded.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_urlsafe(64)
 
 # Rate limiting configuration
 RATE_LIMIT_WINDOW = 3 * 60 * 60  # 3 hours in seconds
@@ -425,18 +428,13 @@ def login():
             password = data.get('password')
             suspension_message = 'Your account has been suspended, contact support or walk in to any of our branch to resolve the issue'
             
-            print(f"Login attempt - Username: {username}")  # Debug print
-            
-            # SQL Injection vulnerability (intentionally vulnerable)
-            query = f"SELECT * FROM users WHERE username='{username}' AND password='{password}'"
-            print(f"Debug - Login query: {query}")  # Debug print
-            
-            user = execute_query(query)
-            print(f"Debug - Query result: {user}")  # Debug print
-            
-            if user and len(user) > 0:
-                user = user[0]  # Get first row
-                print(f"Debug - Found user: {user}")  # Debug print
+            # Fix (M1-R01): parameterized query prevents SQL injection in login
+            # Fix (M1-R03): fetch by username and verify the stored password hash
+            query = "SELECT * FROM users WHERE username = %s"
+            rows = execute_query(query, (username,))
+
+            if rows and len(rows) > 0 and verify_password(password, rows[0][2]):
+                user = rows[0]  # Get first row
 
                 if len(user) > 9 and user[9]:
                     record_event(
@@ -455,7 +453,6 @@ def login():
                 
                 # Generate JWT token instead of using session
                 token = generate_token(user[0], user[1], user[5])
-                print(f"Debug - Generated token: {token}")  # Debug print
 
                 record_event(
                     'LOGIN_SUCCESS',
@@ -479,8 +476,14 @@ def login():
                         'login_time': str(datetime.now())
                     }
                 }))
-                # Vulnerability: Cookie without secure flag
-                response.set_cookie('token', token, httponly=True)
+                # Fix (M1-R07): session cookie is HttpOnly + Secure + SameSite=Strict.
+                # Secure can be disabled via COOKIE_SECURE=false for local HTTP testing.
+                response.set_cookie(
+                    'token', token,
+                    httponly=True,
+                    secure=os.getenv('COOKIE_SECURE', 'true').lower() == 'true',
+                    samesite='Strict',
+                )
                 return response
             
             # Vulnerability: Username enumeration
@@ -858,15 +861,8 @@ def update_bio(current_user):
             'message': str(e)
         }), 500
 
-# Sensitive environment files exposed from the web root
-@app.route('/.env', methods=['GET'])
-@app.route('/.env.bak', methods=['GET'])
-def exposed_env_file():
-    filename = request.path.lstrip('/')
-    response = make_response(EXPOSED_ENV_FILES[filename], 200)
-    response.mimetype = 'text/plain'
-    response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
-    return response
+# Fix (M1-R09): the /.env and /.env.bak routes that served platform secrets
+# over the web root have been removed. Secrets live only in environment variables.
 
 
 # INTERNAL-ONLY ENDPOINTS FOR SSRF DEMO (INTENTIONALLY SENSITIVE)
@@ -1341,13 +1337,13 @@ def forgot_password():
             
             # Vulnerability: SQL Injection possible
             user = execute_query(
-                f"SELECT id FROM users WHERE username='{username}'"
+                "SELECT id FROM users WHERE username = %s", (username,)
             )
             
             if user:
                 # Weak reset pin logic (CWE-330)
                 # Using only 3 digits makes it easily guessable
-                reset_pin = str(random.randint(100, 999))
+                reset_pin = secrets.token_urlsafe(32)  # Fix (M1-R04): strong, non-guessable reset token
                 
                 # Store the reset PIN in database (in plaintext - CWE-319)
                 execute_query(
@@ -1363,8 +1359,8 @@ def forgot_password():
                     'debug_info': {  # Vulnerability: Information disclosure
                         'timestamp': str(datetime.now()),
                         'username': username,
-                        'pin_length': len(reset_pin),
-                        'pin': reset_pin  # Intentionally exposing pin for learning
+                        # Fix (M1-R04): the reset token is never returned in the response
+                        'note': 'if the account exists, a reset link was sent'  # Fix (M1-R04)
                     }
                 })
             else:
@@ -1405,7 +1401,7 @@ def reset_password():
                 # Vulnerability: No password history check
                 execute_query(
                     "UPDATE users SET password = %s, reset_pin = NULL WHERE username = %s",
-                    (new_password, username),
+                    (hash_password(new_password), username),
                     fetch=False
                 )
                 
@@ -1440,13 +1436,13 @@ def api_v1_forgot_password():
         
         # Vulnerability: SQL Injection possible
         user = execute_query(
-            f"SELECT id FROM users WHERE username='{username}'"
+            "SELECT id FROM users WHERE username = %s", (username,)
         )
         
         if user:
             # Weak reset pin logic (CWE-330)
             # Using only 3 digits makes it easily guessable
-            reset_pin = str(random.randint(100, 999))
+            reset_pin = secrets.token_urlsafe(32)  # Fix (M1-R04): strong, non-guessable reset token
             
             # Store the reset PIN in database (in plaintext - CWE-319)
             execute_query(
@@ -1462,8 +1458,8 @@ def api_v1_forgot_password():
                 'debug_info': {  # Vulnerability: Information disclosure
                     'timestamp': str(datetime.now()),
                     'username': username,
-                    'pin_length': len(reset_pin),
-                    'pin': reset_pin  # Intentionally exposing pin for learning
+                    # Fix (M1-R04): the reset token is never returned in the response
+                    'note': 'if the account exists, a reset link was sent'  # Fix (M1-R04)
                 }
             })
         else:
@@ -1490,12 +1486,12 @@ def api_v2_forgot_password():
         
         # Vulnerability: SQL Injection still possible
         user = execute_query(
-            f"SELECT id FROM users WHERE username='{username}'"
+            "SELECT id FROM users WHERE username = %s", (username,)
         )
         
         if user:
             # Weak reset pin logic (CWE-330) - still using 3 digits
-            reset_pin = str(random.randint(100, 999))
+            reset_pin = secrets.token_urlsafe(32)  # Fix (M1-R04): strong, non-guessable reset token
             
             # Store the reset PIN in database (in plaintext - CWE-319)
             execute_query(
@@ -1538,12 +1534,12 @@ def api_v3_forgot_password():
         
         # Vulnerability: SQL Injection still possible
         user = execute_query(
-            f"SELECT id FROM users WHERE username='{username}'"
+            "SELECT id FROM users WHERE username = %s", (username,)
         )
         
         if user:
             # Weak reset pin logic (CWE-330) - now 4 digits but still guessable
-            reset_pin = str(random.randint(1000, 9999))
+            reset_pin = secrets.token_urlsafe(32)  # Fix (M1-R04): strong, non-guessable reset token
             
             # Store the reset PIN in database (in plaintext - CWE-319)
             execute_query(
@@ -1634,7 +1630,7 @@ def api_v1_reset_password():
             # Vulnerability: No password history check
             execute_query(
                 "UPDATE users SET password = %s, reset_pin = NULL WHERE username = %s",
-                (new_password, username),
+                (hash_password(new_password), username),
                 fetch=False
             )
             
@@ -1691,7 +1687,7 @@ def api_v2_reset_password():
             # Vulnerability: No password history check
             execute_query(
                 "UPDATE users SET password = %s, reset_pin = NULL WHERE username = %s",
-                (new_password, username),
+                (hash_password(new_password), username),
                 fetch=False
             )
             
@@ -1737,7 +1733,7 @@ def api_v3_reset_password():
         if user:
             execute_query(
                 "UPDATE users SET password = %s, reset_pin = NULL WHERE username = %s",
-                (new_password, username),
+                (hash_password(new_password), username),
                 fetch=False
             )
             
@@ -2663,4 +2659,5 @@ def ai_rate_limit_status():
 if __name__ == '__main__':
     init_db()
     # Vulnerability: Debug mode enabled in production
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Fix (M1-R11): debug mode is off by default; enable only via FLASK_DEBUG=true.
+    app.run(host='0.0.0.0', port=5000, debug=os.getenv('FLASK_DEBUG', 'false').lower() == 'true')

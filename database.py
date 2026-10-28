@@ -3,6 +3,7 @@ import psycopg2
 from psycopg2 import pool
 from datetime import datetime
 import time
+from werkzeug.security import generate_password_hash
 
 # Vulnerable database configuration
 # CWE-259: Use of Hard-coded Password
@@ -252,10 +253,12 @@ def init_db():
             if not cursor.fetchone():
                 cursor.execute(
                     """
-                    INSERT INTO users (username, password, account_number, balance, is_admin) 
+                    INSERT INTO users (username, password, account_number, balance, is_admin)
                     VALUES (%s, %s, %s, %s, %s)
                     """,
-                    ('admin', 'admin123', 'ADMIN001', 1000000.0, True)
+                    # Fix (M1-R03): seed the admin password as a salted hash, not plaintext.
+                    ('admin', generate_password_hash(os.getenv('ADMIN_PASSWORD', 'admin123')),
+                     'ADMIN001', 1000000.0, True)
                 )
             
             # Create bill categories table
