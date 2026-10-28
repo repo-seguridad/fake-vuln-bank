@@ -1,3 +1,16 @@
+// Fix (M4-R10): HTML-escape every attacker-controlled value before it is
+// inserted into the DOM, so stored content (details, target, actor, user agent)
+// can no longer execute script in an administrator's session.
+function escapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 /*
  * VulnBank Audit Trail console (Logs/Auditoria module).
  *
@@ -93,13 +106,12 @@ function renderSearchInfo(filters, shown, total) {
 
     searchInfo.style.display = 'block';
     searchInfo.innerHTML =
-        'Search filter: <strong>' + filters.search + '</strong> '
-        + '| event: <strong>' + filters.event_type + '</strong> '
-        + '| severity: <strong>' + filters.severity + '</strong> '
-        + '| actor: <strong>' + filters.actor + '</strong> '
-        + '| actor_id: <strong>' + filters.user_id + '</strong> '
-        + '| order: <strong>' + filters.order + '</strong> '
-        + '(XSS vulnerable) '
+        'Search filter: <strong>' + escapeHtml(filters.search) + '</strong> '
+        + '| event: <strong>' + escapeHtml(filters.event_type) + '</strong> '
+        + '| severity: <strong>' + escapeHtml(filters.severity) + '</strong> '
+        + '| actor: <strong>' + escapeHtml(filters.actor) + '</strong> '
+        + '| actor_id: <strong>' + escapeHtml(filters.user_id) + '</strong> '
+        + '| order: <strong>' + escapeHtml(filters.order) + '</strong> '
         + '— showing ' + shown + ' of ' + total + ' events';
 }
 
@@ -141,13 +153,13 @@ function renderAuditTable(entries) {
         return `
             <tr data-log-id="${entry.id}">
                 <td><span class="audit-mono-id">#${entry.id}</span></td>
-                <td class="mono">${entry.created_at || '-'}</td>
-                <td><span class="severity-badge ${severityBadgeClass(entry.severity)}">${entry.severity || 'INFO'}</span></td>
-                <td class="mono">${entry.event_type || '-'}</td>
-                <td>${entry.actor_username || 'anonymous'}</td>
-                <td>${entry.target || '-'}</td>
-                <td class="audit-cell-details">${entry.details || ''}</td>
-                <td class="audit-cell-ua">${entry.user_agent || '-'}</td>
+                <td class="mono">${escapeHtml(entry.created_at || '-')}</td>
+                <td><span class="severity-badge ${severityBadgeClass(entry.severity)}">${escapeHtml(entry.severity || 'INFO')}</span></td>
+                <td class="mono">${escapeHtml(entry.event_type || '-')}</td>
+                <td>${escapeHtml(entry.actor_username || 'anonymous')}</td>
+                <td>${escapeHtml(entry.target || '-')}</td>
+                <td class="audit-cell-details">${escapeHtml(entry.details || '')}</td>
+                <td class="audit-cell-ua">${escapeHtml(entry.user_agent || '-')}</td>
                 <td><span class="${chipClass}">${chipLabel}</span></td>
                 <td>
                     <div class="action-buttons">
@@ -318,20 +330,20 @@ async function openAuditModal(logId) {
 
         modalBody.innerHTML = `
             <div class="user-detail-row"><span class="user-detail-label">Entry</span><span class="user-detail-value">#${entry.id}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Timestamp</span><span class="user-detail-value">${entry.created_at}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Event</span><span class="user-detail-value">${entry.event_type}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Severity</span><span class="user-detail-value">${entry.severity}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Result</span><span class="user-detail-value">${entry.result}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Actor</span><span class="user-detail-value">${entry.actor_username || 'anonymous'} (id ${entry.actor_id === null ? '-' : entry.actor_id})</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Target</span><span class="user-detail-value">${entry.target || '-'}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">IP</span><span class="user-detail-value">${entry.ip_address || '-'}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">User Agent</span><span class="user-detail-value">${entry.user_agent || '-'}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Referer</span><span class="user-detail-value">${entry.referer || '-'}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Endpoint</span><span class="user-detail-value">${entry.http_method || ''} ${entry.endpoint || ''}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Request ID</span><span class="user-detail-value">${entry.request_id || '-'}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Stored signature</span><span class="user-detail-value">${entry.signature || '(none)'}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Timestamp</span><span class="user-detail-value">${escapeHtml(entry.created_at)}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Event</span><span class="user-detail-value">${escapeHtml(entry.event_type)}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Severity</span><span class="user-detail-value">${escapeHtml(entry.severity)}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Result</span><span class="user-detail-value">${escapeHtml(entry.result)}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Actor</span><span class="user-detail-value">${escapeHtml(entry.actor_username || 'anonymous')} (id ${entry.actor_id === null ? '-' : entry.actor_id})</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Target</span><span class="user-detail-value">${escapeHtml(entry.target || '-')}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">IP</span><span class="user-detail-value">${escapeHtml(entry.ip_address || '-')}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">User Agent</span><span class="user-detail-value">${escapeHtml(entry.user_agent || '-')}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Referer</span><span class="user-detail-value">${escapeHtml(entry.referer || '-')}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Endpoint</span><span class="user-detail-value">${escapeHtml(entry.http_method || '')} ${escapeHtml(entry.endpoint || '')}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Request ID</span><span class="user-detail-value">${escapeHtml(entry.request_id || '-')}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Stored signature</span><span class="user-detail-value">${escapeHtml(entry.signature || '(none)')}</span></div>
             <div class="user-detail-row"><span class="user-detail-label">Integrity</span><span class="user-detail-value">${integrity && integrity.integrity ? integrity.integrity.reason : 'not checked'}</span></div>
-            <div class="user-detail-row"><span class="user-detail-label">Details</span><span class="user-detail-value user-detail-bio">${entry.details || ''}</span></div>
+            <div class="user-detail-row"><span class="user-detail-label">Details</span><span class="user-detail-value user-detail-bio">${escapeHtml(entry.details || '')}</span></div>
 
             <form id="audit-edit-form" class="modal-delete-form" data-log-id="${entry.id}">
                 <div class="user-modal-actions">
