@@ -8,7 +8,8 @@ import os
 from dotenv import load_dotenv
 from auth import generate_token, token_required, verify_token, init_auth_routes
 import auth
-from werkzeug.utils import secure_filename 
+from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash
 from flask_swagger_ui import get_swaggerui_blueprint
 from flask_cors import CORS
 from database import (
@@ -350,51 +351,36 @@ def register():
                     'tried_at': str(datetime.now())  # Information disclosure
                 }), 400
             
-            # Build dynamic query based on user input fields
-            # Vulnerability: Mass Assignment possible here
-            fields = ['username', 'password', 'account_number']
-            values = [username, user_data.get('password'), account_number]
-            
-            # Include any additional parameters from user input
-            for key, value in user_data.items():
-                if key not in ['username', 'password']:
-                    fields.append(key)
-                    values.append(value)
-            
-            # Build the SQL query dynamically
-            query = f"""
-                INSERT INTO users ({', '.join(fields)})
-                VALUES ({', '.join(['%s'] * len(fields))})
+            # Fix (M2-R01): strict column whitelist. Only username, password and a
+            # server-generated account_number are inserted, so the client can no
+            # longer set is_admin, balance, reset_pin, etc. via mass assignment.
+            # The password is stored as a salted hash.
+            password = user_data.get('password') if isinstance(user_data, dict) else None
+            if not password:
+                return jsonify({'status': 'error', 'message': 'Password is required'}), 400
+
+            query = """
+                INSERT INTO users (username, password, account_number)
+                VALUES (%s, %s, %s)
                 RETURNING id, username, account_number, balance, is_admin
             """
-            
-            result = execute_query(query, values, fetch=True)
+            result = execute_query(
+                query,
+                (username, generate_password_hash(password), account_number),
+                fetch=True,
+            )
             
             if not result or not result[0]:
                 raise Exception("Failed to create user")
                 
             user = result[0]
             
-            # Excessive Data Exposure in Response
-            sensitive_data = {
+            # Fix (M2-R01/M2-R11): minimal response; the raw input, role, balance
+            # and debug headers are no longer echoed back to the client.
+            response = jsonify({
                 'status': 'success',
                 'message': 'Registration successful! Proceed to login',
-                'debug_data': {  # Sensitive data exposed
-                    'user_id': user[0],
-                    'username': user[1],
-                    'account_number': user[2],
-                    'balance': float(user[3]) if user[3] else 1000.0,
-                    'is_admin': user[4],
-                    'registration_time': str(datetime.now()),
-                    'server_info': request.headers.get('User-Agent'),
-                    'raw_data': user_data,  # Exposing raw input data
-                    'fields_registered': fields  # Show what fields were registered
-                }
-            }
-            
-            response = jsonify(sensitive_data)
-            response.headers['X-Debug-Info'] = str(sensitive_data['debug_data'])
-            response.headers['X-User-Info'] = f"id={user[0]};admin={user[4]};balance={user[3]}"
+            })
 
             record_event(
                 'ACCOUNT_CREATED',
