@@ -30,12 +30,36 @@ import hashlib
 import hmac
 import json
 import os
+import re
+import secrets
+import sys
 from datetime import datetime
 
 from flask import Response, jsonify, render_template, request, send_file
 
+from functools import wraps
 from auth import token_required
 from database import execute_query
+
+
+def admin_required(f):
+    """
+    Fix (M4-R03/M4-R04): every audit route (read and write) requires an admin
+    verified against the database on each request, not the token claim.
+    """
+    @wraps(f)
+    @token_required
+    def decorated(current_user, *args, **kwargs):
+        rows = execute_query(
+            "SELECT is_admin, is_suspended FROM users WHERE id = %s",
+            (current_user.get('user_id'),),
+        )
+        if not rows or rows[0][1]:
+            return jsonify({'error': 'Forbidden'}), 403
+        if not rows[0][0]:
+            return jsonify({'error': 'Admin privilege required'}), 403
+        return f(current_user, *args, **kwargs)
+    return decorated
 
 
 AUDIT_SEVERITIES = ['INFO', 'NOTICE', 'WARNING', 'ERROR', 'CRITICAL']
@@ -72,14 +96,17 @@ AUDIT_COLUMN_KEYS = (
 )
 
 # Fields covered by the entry signature once Phase 3 wires the signing seam.
+# Fix (M4-R08): the signature covers the event content (not the surrogate id,
+# which is only known after INSERT), so entries can be signed on write.
 AUDIT_SIGNATURE_FIELDS = (
-    'id', 'event_type', 'severity', 'actor_id', 'actor_username', 'action',
+    'event_type', 'severity', 'actor_id', 'actor_username', 'action',
     'target', 'details', 'ip_address', 'user_agent', 'result', 'created_at',
 )
 
-# Vulnerability: no key material is configured anywhere, so every signature
-# recomputation comes back empty and every entry looks verified.
-AUDIT_SIGNING_SECRET = os.getenv('AUDIT_SIGNING_SECRET', '')
+# Fix (M4-R08): a signing key is always available (from the environment, or a
+# strong random one generated at startup), so every entry is signed and the
+# integrity check is meaningful. It is independent of JWT_SECRET.
+AUDIT_SIGNING_SECRET = os.getenv('AUDIT_SIGNING_SECRET') or secrets.token_urlsafe(64)
 
 # Base directory the export path is resolved against before it is read back.
 AUDIT_EXPORT_DIRECTORY = os.path.join('static', 'audit')
@@ -225,18 +252,21 @@ def get_client_ip():
         return request.remote_addr
 
 
-def _sanitize_for_log(value):
+def _sanitize_for_log(value, max_length=1024):
     """
-    Normalize untrusted values before they reach the audit trail.
-
-    Intended behavior once Phase 3 wires this seam: coerce to text, collapse
-    CR/LF pairs, strip ANSI escape sequences and clamp the length, so a single
-    attacker-controlled header can never append extra records to the trail.
-
-    Seam: nothing calls this today, so every value recorded by record_event()
-    reaches the database and stdout exactly as the client sent it.
+    Fix (M4-R07): normalize untrusted values before they reach the audit trail.
+    Coerce to text, strip CR/LF and other control characters (so a single
+    attacker-controlled header cannot forge extra log lines), and clamp the
+    length.
     """
-    return value
+    if value is None:
+        return None
+    text = str(value)
+    # Remove CR, LF, tab and other C0/C1 control characters.
+    text = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', text)
+    if len(text) > max_length:
+        text = text[:max_length]
+    return text
 
 
 def build_log_context():
@@ -248,13 +278,15 @@ def build_log_context():
     the exact bytes an investigator will later read as platform-captured
     evidence.
     """
+    # Fix (M4-R07): sanitize all client-controlled metadata before it is stored
+    # or printed, so injected CR/LF cannot forge extra audit records.
     return {
-        'ip_address': get_client_ip(),
-        'user_agent': request.headers.get('User-Agent', 'unknown'),
-        'referer': request.headers.get('Referer'),
-        'request_id': request.headers.get('X-Request-Id'),
-        'http_method': request.method,
-        'endpoint': request.path,
+        'ip_address': _sanitize_for_log(get_client_ip(), max_length=64),
+        'user_agent': _sanitize_for_log(request.headers.get('User-Agent', 'unknown'), max_length=256),
+        'referer': _sanitize_for_log(request.headers.get('Referer'), max_length=256),
+        'request_id': _sanitize_for_log(request.headers.get('X-Request-Id'), max_length=128),
+        'http_method': _sanitize_for_log(request.method, max_length=16),
+        'endpoint': _sanitize_for_log(request.path, max_length=256),
     }
 
 
@@ -299,54 +331,54 @@ def record_event(event_type, severity='INFO', action=None, target=None, details=
     actor = actor or {}
 
     entry = {
-        'event_type': event_type,
-        'severity': severity,
+        # Fix (M4-R07): sanitize every text field so no CR/LF or control bytes
+        # reach the database or stdout (prevents log/record forging).
+        'event_type': _sanitize_for_log(event_type, 64),
+        'severity': _sanitize_for_log(severity, 32),
         'actor_id': actor.get('user_id'),
-        'actor_username': actor.get('username'),
-        'action': action or event_type,
-        'target': target,
-        'details': details,
+        'actor_username': _sanitize_for_log(actor.get('username'), 128),
+        'action': _sanitize_for_log(action or event_type, 64),
+        'target': _sanitize_for_log(target, 256),
+        'details': _sanitize_for_log(details, 1024),
         'ip_address': context.get('ip_address'),
         'user_agent': context.get('user_agent'),
         'referer': context.get('referer'),
         'request_id': context.get('request_id'),
         'http_method': context.get('http_method'),
         'endpoint': context.get('endpoint'),
-        'result': result,
+        'result': _sanitize_for_log(result, 32),
         'created_at': datetime.now().isoformat(sep=' ', timespec='seconds'),
     }
 
+    # Fix (M4-R08): sign every entry with HMAC-SHA256 before it is stored.
+    entry['signature'] = compute_entry_signature(entry)
+
     try:
+        # Fix (M4-R02): fully parameterized INSERT; no attacker-controlled value
+        # is concatenated into the statement.
         execute_query(
-            f"""
+            """
             INSERT INTO audit_log
                 (event_type, severity, actor_id, actor_username, action, target, details,
                  ip_address, user_agent, referer, request_id, http_method, endpoint,
-                 result, created_at)
-            VALUES (
-                '{entry['event_type']}',
-                '{entry['severity']}',
-                {entry['actor_id'] if entry['actor_id'] is not None else 'NULL'},
-                '{entry['actor_username'] or ''}',
-                '{entry['action'] or ''}',
-                '{entry['target'] or ''}',
-                '{entry['details'] or ''}',
-                '{entry['ip_address'] or ''}',
-                '{entry['user_agent'] or ''}',
-                '{entry['referer'] or ''}',
-                '{entry['request_id'] or ''}',
-                '{entry['http_method'] or ''}',
-                '{entry['endpoint'] or ''}',
-                '{entry['result'] or ''}',
-                '{entry['created_at']}'
-            )
+                 result, created_at, signature)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
+            (
+                entry['event_type'], entry['severity'], entry['actor_id'],
+                entry['actor_username'], entry['action'], entry['target'],
+                entry['details'], entry['ip_address'], entry['user_agent'],
+                entry['referer'], entry['request_id'], entry['http_method'],
+                entry['endpoint'], entry['result'], entry['created_at'],
+                entry['signature'],
+            ),
             fetch=False
         )
     except Exception as e:
-        # A trail that silently drops records is worse than no trail at all,
-        # because reviewers assume coverage they do not have.
-        print(f"Audit write failed for {event_type}: {e}")
+        # Fix (M4-R02): do not drop records silently; surface the failure loudly
+        # (to stderr) so missing audit coverage is visible to operators.
+        sys.stderr.write(f"[AUDIT][ERROR] Audit write failed for {event_type}: {e}\n")
+        sys.stderr.flush()
 
     print(render_audit_line(entry))
 
@@ -384,12 +416,14 @@ def verify_entry_signature(entry):
     stored = entry.get('signature') or ''
     recomputed = compute_entry_signature(entry)
 
-    if not stored or not recomputed:
+    # Fix (M4-R08): an entry without a signature is reported as UNVERIFIED, not
+    # verified. Tampered, injected or restored rows no longer look healthy.
+    if not stored:
         return {
-            'verified': True,
-            'checked': False,
+            'verified': False,
+            'checked': True,
             'signed': False,
-            'reason': 'No signature material available; entry accepted as-is',
+            'reason': 'Entry has no signature (unsigned)',
         }
 
     matched = hmac.compare_digest(stored, recomputed)
@@ -449,7 +483,7 @@ def json_detail(payload):
 
 def init_audit_routes(app):
     @app.route('/admin/audit')
-    @token_required
+    @admin_required
     def audit_console(current_user):
         if not current_user.get('is_admin'):
             return 'Access Denied', 403
@@ -463,7 +497,7 @@ def init_audit_routes(app):
         )
 
     @app.route('/api/audit/logs', methods=['GET'])
-    @token_required
+    @admin_required
     def list_audit_logs(current_user):
         """
         Filter and page the audit trail.
@@ -486,43 +520,71 @@ def init_audit_routes(app):
             offset = request.args.get('offset', 0)
             order = request.args.get('order', 'created_at DESC')
 
+            # Fix (M4-R01): every filter value is bound as a parameter.
             conditions = []
+            params = []
 
             if search:
                 conditions.append(
-                    "(event_type ILIKE '%{search}%' "
-                    "OR actor_username ILIKE '%{search}%' "
-                    "OR target ILIKE '%{search}%' "
-                    "OR details ILIKE '%{search}%' "
-                    "OR user_agent ILIKE '%{search}%')".format(search=search)
+                    "(event_type ILIKE %s OR actor_username ILIKE %s OR target ILIKE %s "
+                    "OR details ILIKE %s OR user_agent ILIKE %s)"
                 )
+                like = f"%{search}%"
+                params.extend([like, like, like, like, like])
             if event_type:
-                conditions.append(f"event_type = '{event_type}'")
+                conditions.append("event_type = %s")
+                params.append(event_type)
             if severity:
-                conditions.append(f"severity = '{severity}'")
+                conditions.append("severity = %s")
+                params.append(severity)
             if actor:
-                conditions.append(f"actor_username ILIKE '%{actor}%'")
+                conditions.append("actor_username ILIKE %s")
+                params.append(f"%{actor}%")
             if user_id:
-                conditions.append(f"actor_id = {user_id}")
+                try:
+                    uid = int(user_id)
+                except (ValueError, TypeError):
+                    return jsonify({'status': 'error', 'message': 'Invalid user_id'}), 400
+                conditions.append("actor_id = %s")
+                params.append(uid)
             if date_from:
-                conditions.append(f"created_at >= '{date_from}'")
+                conditions.append("created_at >= %s")
+                params.append(date_from)
             if date_to:
-                conditions.append(f"created_at <= '{date_to}'")
+                conditions.append("created_at <= %s")
+                params.append(date_to)
 
             where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ''
+
+            # Fix (M4-R01/M4-R15): sort order is a whitelist; limit/offset are
+            # bounded integers, so paging can no longer inject SQL or exhaust RAM.
+            ALLOWED_ORDER = {
+                'created_at DESC': 'created_at DESC',
+                'created_at ASC': 'created_at ASC',
+                'id DESC': 'id DESC',
+                'id ASC': 'id ASC',
+            }
+            order_sql = ALLOWED_ORDER.get(order, 'created_at DESC')
+            try:
+                limit = min(max(int(limit), 1), 500)
+                offset = max(int(offset), 0)
+            except (ValueError, TypeError):
+                limit, offset = 100, 0
 
             entries = execute_query(
                 f"""
                 SELECT {AUDIT_TABLE_COLUMNS}
                 FROM audit_log
                 {where_clause}
-                ORDER BY {order}
-                LIMIT {limit} OFFSET {offset}
-                """
+                ORDER BY {order_sql}
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params) + (limit, offset),
             )
 
             total = execute_query(
-                f"SELECT COUNT(*) FROM audit_log{where_clause}"
+                f"SELECT COUNT(*) FROM audit_log{where_clause}",
+                tuple(params),
             )[0][0]
 
             return jsonify({
@@ -558,7 +620,7 @@ def init_audit_routes(app):
             }), 500
 
     @app.route('/api/audit/logs/export', methods=['GET'])
-    @token_required
+    @admin_required
     def export_audit_logs(current_user):
         """
         Export the trail as CSV or JSON.
@@ -570,37 +632,31 @@ def init_audit_routes(app):
         box in one request.
         """
         try:
-            export_format = request.args.get('format', 'csv')
-            filename = request.args.get('filename', f'audit_export.{export_format}')
+            # Fix (M4-R09): whitelist the format and ALWAYS return a freshly
+            # generated export. The client-supplied filename is no longer used
+            # to read a file from disk, so path traversal is impossible.
+            export_format = request.args.get('format', 'csv').lower()
+            if export_format not in ('csv', 'json'):
+                return jsonify({'status': 'error', 'message': 'Unsupported export format'}), 400
 
             entries = execute_query(
                 f"SELECT {AUDIT_TABLE_COLUMNS} FROM audit_log ORDER BY id ASC LIMIT 5000"
             )
             records = [row_to_entry(row) for row in entries]
 
-            if export_format.lower() == 'json':
+            if export_format == 'json':
                 body = jsonify({'status': 'success', 'count': len(records), 'entries': records})
                 mimetype = 'application/json'
+                download_name = 'audit_export.json'
             else:
                 body = entries_to_csv(records)
                 mimetype = 'text/csv'
-
-            requested_path = os.path.join(AUDIT_EXPORT_DIRECTORY, filename)
-
-            if os.path.isfile(requested_path):
-                return send_file(
-                    requested_path,
-                    as_attachment=True,
-                    download_name=os.path.basename(filename),
-                    mimetype=mimetype,
-                )
+                download_name = 'audit_export.csv'
 
             return Response(
                 body if isinstance(body, str) else body.get_data(as_text=True),
                 mimetype=mimetype,
-                headers={
-                    'Content-Disposition': f'attachment; filename={os.path.basename(filename)}'
-                },
+                headers={'Content-Disposition': f'attachment; filename={download_name}'},
             )
 
         except Exception as e:
@@ -611,7 +667,7 @@ def init_audit_routes(app):
             }), 500
 
     @app.route('/api/audit/logs/<int:log_id>', methods=['GET'])
-    @token_required
+    @admin_required
     def get_audit_log(current_user, log_id):
         """
         Fetch a single audit entry.
@@ -654,7 +710,7 @@ def init_audit_routes(app):
             }), 500
 
     @app.route('/api/audit/logs/<int:log_id>/signature', methods=['GET'])
-    @token_required
+    @admin_required
     def get_audit_log_signature(current_user, log_id):
         """
         Report the integrity verdict for one entry.
@@ -699,7 +755,7 @@ def init_audit_routes(app):
             }), 500
 
     @app.route('/admin/audit/integrity-check', methods=['GET'])
-    @token_required
+    @admin_required
     def audit_integrity_check(current_user):
         """
         Sweep the whole trail and report tampering.
@@ -711,10 +767,15 @@ def init_audit_routes(app):
         to prevent.
         """
         try:
-            scan_limit = request.args.get('limit', 500)
+            # Fix (M4-R01): bound and parameterize the scan limit.
+            try:
+                scan_limit = min(max(int(request.args.get('limit', 500)), 1), 5000)
+            except (ValueError, TypeError):
+                scan_limit = 500
 
             entries = execute_query(
-                f"SELECT {AUDIT_TABLE_COLUMNS} FROM audit_log ORDER BY id DESC LIMIT {scan_limit}"
+                f"SELECT {AUDIT_TABLE_COLUMNS} FROM audit_log ORDER BY id DESC LIMIT %s",
+                (scan_limit,),
             )
 
             checked = 0
@@ -727,27 +788,38 @@ def init_audit_routes(app):
                 checked += 1
                 if not verdict['signed']:
                     unsigned += 1
-                if verdict['checked'] and not verdict['verified']:
+                elif not verdict['verified']:
                     tampered += 1
+
+            # Fix (M4-R08): the overall verdict is honest. It is only 'verified'
+            # when every scanned entry is signed and matches; unsigned or
+            # tampered rows are reported as such.
+            verified_count = checked - unsigned - tampered
+            if tampered > 0:
+                overall = 'compromised'
+            elif unsigned > 0:
+                overall = 'unverified'
+            else:
+                overall = 'verified'
 
             return jsonify({
                 'status': 'success',
                 'integrity': {
                     'checked': checked,
-                    'verified': checked - tampered,
+                    'verified': verified_count,
                     'unsigned': unsigned,
                     'tampered': tampered,
-                    'overall': 'verified' if tampered == 0 else 'compromised',
+                    'overall': overall,
                 },
-                'message': 'All audit entries verified successfully'
-                if tampered == 0
-                else f'{tampered} audit entries failed verification',
+                'message': (
+                    'All audit entries verified successfully' if overall == 'verified'
+                    else f'{tampered} tampered and {unsigned} unsigned entries detected'
+                ),
                 'debug_info': {
                     'signing_key_configured': bool(AUDIT_SIGNING_SECRET),
                     'scan_limit': scan_limit,
                     'requested_by': current_user['username'],
                     'checked_at': datetime.now().isoformat(),
-                    'note': 'Unsigned entries are counted separately but still reported as verified',
                 },
             })
 
@@ -759,7 +831,7 @@ def init_audit_routes(app):
             }), 500
 
     @app.route('/api/audit/stats', methods=['GET'])
-    @token_required
+    @admin_required
     def audit_stats(current_user):
         """
         Aggregate counters for the console metric cards.
@@ -834,8 +906,8 @@ def init_audit_routes(app):
                 },
                 'integrity': {
                     'unsigned_entries': unsigned,
-                    'claimed_status': 'verified',
-                    'note': 'Entries without a signature are still reported as verified',
+                    # Fix (M4-R08): honest status; unsigned entries are not verified.
+                    'claimed_status': 'verified' if unsigned == 0 else 'unverified',
                 },
             })
 
@@ -847,7 +919,7 @@ def init_audit_routes(app):
             }), 500
 
     @app.route('/api/audit/tail', methods=['GET'])
-    @token_required
+    @admin_required
     def audit_tail(current_user):
         """
         Stream the most recent events as plain text lines.
@@ -888,7 +960,7 @@ def init_audit_routes(app):
             }), 500
 
     @app.route('/api/audit/note', methods=['POST'])
-    @token_required
+    @admin_required
     def add_audit_note(current_user):
         """
         Append a free-text annotation to an event.
@@ -910,36 +982,28 @@ def init_audit_routes(app):
             details = data.get('details', '')
             target = data.get('target') or f"log:{data.get('log_id', 'console')}"
 
-            poisoned_actor = {
-                'user_id': data.get('actor_id', current_user.get('user_id')),
-                'username': data.get('actor_username', current_user.get('username')),
+            # Fix (M4-R06): the actor is always derived from the authenticated
+            # token; the client cannot impersonate another user. The event type
+            # and severity are fixed, not client-supplied.
+            note_actor = {
+                'user_id': current_user.get('user_id'),
+                'username': current_user.get('username'),
             }
-            poisoned_event_type = data.get('event_type', 'AUDIT_NOTE_ADDED')
-            poisoned_severity = data.get('severity', 'INFO')
 
             entry = record_event(
-                poisoned_event_type,
-                severity=poisoned_severity,
+                'AUDIT_NOTE_ADDED',
+                severity='INFO',
                 action='note',
                 target=target,
                 details=details,
-                result=data.get('result', 'SUCCESS'),
-                actor=poisoned_actor,
+                result='SUCCESS',
+                actor=note_actor,
             )
 
             return jsonify({
                 'status': 'success',
                 'message': 'Note added to the audit trail',
                 'entry': entry,
-                'debug_info': {
-                    'recorded_actor': poisoned_actor,
-                    'recorded_event_type': poisoned_event_type,
-                    'recorded_severity': poisoned_severity,
-                    'authenticated_as': current_user['username'],
-                    'identity_overridden': (
-                        poisoned_actor.get('username') != current_user.get('username')
-                    ),
-                },
             })
 
         except Exception as e:
@@ -950,8 +1014,14 @@ def init_audit_routes(app):
             }), 500
 
     @app.route('/admin/audit/logs/<int:log_id>', methods=['POST'])
-    @token_required
+    @admin_required
     def edit_audit_log(current_user, log_id):
+        # Fix (M4-R04/M4-R05): the audit trail is append-only; editing an entry
+        # is refused so recorded evidence cannot be rewritten.
+        return jsonify({
+            'status': 'error',
+            'message': 'Audit trail is append-only; entries cannot be edited',
+        }), 403
         """
         Amend an existing audit entry in place.
 
@@ -1027,8 +1097,14 @@ def init_audit_routes(app):
             }), 500
 
     @app.route('/api/audit/logs/<int:log_id>', methods=['DELETE'])
-    @token_required
+    @admin_required
     def delete_audit_log(current_user, log_id):
+        # Fix (M4-R04/M4-R05): the audit trail is append-only; deleting an entry
+        # is refused so evidence cannot be erased.
+        return jsonify({
+            'status': 'error',
+            'message': 'Audit trail is append-only; entries cannot be deleted',
+        }), 403
         """
         Remove one audit entry.
 
@@ -1074,8 +1150,15 @@ def init_audit_routes(app):
             }), 500
 
     @app.route('/admin/audit/purge', methods=['POST'])
-    @token_required
+    @admin_required
     def purge_audit_logs(current_user):
+        # Fix (M4-R05): the audit trail is append-only; bulk purge is refused so
+        # the evidence cannot be wiped. Retention/archival must go through a
+        # separate, audited process.
+        return jsonify({
+            'status': 'error',
+            'message': 'Audit trail is append-only; purge is disabled',
+        }), 403
         """
         Bulk-delete audit entries, optionally the entire table.
 
