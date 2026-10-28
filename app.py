@@ -563,13 +563,21 @@ def dashboard(current_user):
 
 # Check balance endpoint
 @app.route('/check_balance/<account_number>')
-def check_balance(account_number):
-    # Broken Object Level Authorization (BOLA) vulnerability
-    # No authentication check, anyone can check any account balance
+@token_required
+def check_balance(current_user, account_number):
+    # Fix (M3-R03): require authentication, verify ownership (or admin) and use
+    # a parameterized query. Closes the anonymous BOLA + SQL injection vector.
     try:
-        # Vulnerability: SQL Injection possible
+        owner = execute_query(
+            "SELECT account_number, is_admin FROM users WHERE id = %s",
+            (current_user['user_id'],),
+        )
+        if not owner or (owner[0][0] != account_number and not owner[0][1]):
+            return jsonify({'status': 'error', 'message': 'Forbidden'}), 403
+
         user = execute_query(
-            f"SELECT username, balance FROM users WHERE account_number='{account_number}'"
+            "SELECT username, balance FROM users WHERE account_number = %s",
+            (account_number,),
         )
         
         if user:
@@ -596,22 +604,35 @@ def check_balance(account_number):
 def transfer(current_user):
     try:
         data = request.get_json()
-        # Vulnerability: No input validation on amount
-        # Vulnerability: Negative amounts allowed
-        amount = float(data.get('amount'))
         to_account = data.get('to_account')
-        
+
+        # Fix (M3-R01): validate the amount is a positive, finite number within a
+        # sane range. No negative or zero transfers are accepted.
+        try:
+            amount = Decimal(str(data.get('amount')))
+        except (InvalidOperation, TypeError):
+            return jsonify({'status': 'error', 'message': 'Invalid amount'}), 400
+        if not amount.is_finite() or amount <= 0 or amount > Decimal('1000000'):
+            return jsonify({'status': 'error', 'message': 'Amount must be between 0 and 1,000,000'}), 400
+        amount = amount.quantize(Decimal('0.01'))
+
         # Get sender's account number
-        # Race condition vulnerability in checking balance
         sender_data = execute_query(
             "SELECT account_number, balance FROM users WHERE id = %s",
             (current_user['user_id'],)
         )[0]
-        
+
         from_account = sender_data[0]
-        balance = float(sender_data[1])
-        
-        if balance >= abs(amount):  # Check against absolute value of amount
+        balance = Decimal(str(sender_data[1]))
+
+        # Fix (M3-R01): the destination must exist and differ from the sender.
+        if to_account == from_account:
+            return jsonify({'status': 'error', 'message': 'Cannot transfer to the same account'}), 400
+        dest = execute_query("SELECT account_number FROM users WHERE account_number = %s", (to_account,))
+        if not dest:
+            return jsonify({'status': 'error', 'message': 'Destination account does not exist'}), 400
+
+        if balance >= amount:
             try:
                 # Vulnerability: Negative transfers possible
                 # Vulnerability: No transaction atomicity
@@ -646,7 +667,7 @@ def transfer(current_user):
                 return jsonify({
                     'status': 'success',
                     'message': 'Transfer Completed',
-                    'new_balance': balance - amount
+                    'new_balance': float(balance - amount)
                 })
                 
             except Exception as e:
@@ -678,12 +699,20 @@ def transfer(current_user):
 
 # Get transaction history endpoint
 @app.route('/transactions/<account_number>')
-def get_transaction_history(account_number):
-    # Vulnerability: No authentication required (BOLA)
-    # Vulnerability: SQL Injection possible
+@token_required
+def get_transaction_history(current_user, account_number):
+    # Fix (M3-R03): require authentication, verify ownership (or admin) and use
+    # a parameterized query.
     try:
-        query = f"""
-            SELECT 
+        owner = execute_query(
+            "SELECT account_number, is_admin FROM users WHERE id = %s",
+            (current_user['user_id'],),
+        )
+        if not owner or (owner[0][0] != account_number and not owner[0][1]):
+            return jsonify({'status': 'error', 'message': 'Forbidden'}), 403
+
+        query = """
+            SELECT
                 id,
                 from_account,
                 to_account,
@@ -691,12 +720,12 @@ def get_transaction_history(account_number):
                 timestamp,
                 transaction_type,
                 description
-            FROM transactions 
-            WHERE from_account='{account_number}' OR to_account='{account_number}'
+            FROM transactions
+            WHERE from_account = %s OR to_account = %s
             ORDER BY timestamp DESC
         """
-        
-        transactions = execute_query(query)
+
+        transactions = execute_query(query, (account_number, account_number))
         
         # Vulnerability: Information disclosure
         transaction_list = [{
@@ -1102,17 +1131,28 @@ def admin_panel(current_user):
 @app.route('/admin/approve_loan/<int:loan_id>', methods=['POST'])
 @token_required
 def approve_loan(current_user, loan_id):
-    if not current_user.get('is_admin'):
+    # Fix (M3-R08): verify the admin role from the database, not the token claim.
+    admin_row = execute_query(
+        "SELECT is_admin FROM users WHERE id = %s",
+        (current_user.get('user_id'),),
+    )
+    if not admin_row or not admin_row[0][0]:
         return jsonify({'error': 'Access Denied'}), 403
-    
+
     try:
-        # Vulnerability: Race condition in loan approval
-        # Vulnerability: No validation if loan is already approved
         loan = execute_query(
             "SELECT * FROM loans WHERE id = %s",
             (loan_id,)
-        )[0]
-        
+        )
+        if not loan:
+            return jsonify({'status': 'error', 'message': 'Loan not found'}), 404
+        loan = loan[0]
+
+        # Fix (M3-R08): a loan may only be approved once, while it is pending,
+        # so the same loan can no longer be approved repeatedly to mint balance.
+        if loan[3] != 'pending':
+            return jsonify({'status': 'error', 'message': 'Loan is not pending'}), 400
+
         if loan:
             try:
                 loan_amount = parse_positive_loan_amount(loan[2])
@@ -1122,10 +1162,9 @@ def approve_loan(current_user, loan_id):
                     'message': 'Loan amount must be greater than zero'
                 }), 400
 
-            # Vulnerability: No transaction atomicity
             queries = [
                 (
-                    "UPDATE loans SET status='approved' WHERE id = %s",
+                    "UPDATE loans SET status='approved' WHERE id = %s AND status='pending'",
                     (loan_id,)
                 ),
                 (
@@ -1766,21 +1805,27 @@ def api_v3_reset_password():
 @app.route('/api/transactions', methods=['GET'])
 @token_required
 def api_transactions(current_user):
-    # Vulnerability: No validation of account_number parameter
     account_number = request.args.get('account_number')
-    
+
     if not account_number:
         return jsonify({'error': 'Account number required'}), 400
-        
-    # Vulnerability: SQL Injection
-    query = f"""
-        SELECT * FROM transactions 
-        WHERE from_account='{account_number}' OR to_account='{account_number}'
+
+    # Fix (M3-R03): verify ownership (or admin) and use a parameterized query.
+    owner = execute_query(
+        "SELECT account_number, is_admin FROM users WHERE id = %s",
+        (current_user['user_id'],),
+    )
+    if not owner or (owner[0][0] != account_number and not owner[0][1]):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    query = """
+        SELECT * FROM transactions
+        WHERE from_account = %s OR to_account = %s
         ORDER BY timestamp DESC
     """
-    
+
     try:
-        transactions = execute_query(query)
+        transactions = execute_query(query, (account_number, account_number))
         
         # Convert Decimal objects to float for JSON serialization
         transaction_list = []
@@ -1818,20 +1863,20 @@ def create_virtual_card(current_user):
         # Vulnerability: Fixed expiry date calculation
         expiry_date = (datetime.now() + timedelta(days=365)).strftime('%m/%y')
         
-        # Vulnerability: SQL injection possible in card_type
         card_type = data.get('card_type', 'standard')
         card_currency = normalize_card_currency(data.get('currency'))
-        
-        # Create virtual card
-        query = f"""
-            INSERT INTO virtual_cards 
+
+        # Fix (M3-R07): parameterized INSERT prevents SQL injection via card_type.
+        query = """
+            INSERT INTO virtual_cards
             (user_id, card_number, cvv, expiry_date, card_limit, card_type, currency)
-            VALUES 
-            ({current_user['user_id']}, '{card_number}', '{cvv}', '{expiry_date}', {card_limit}, '{card_type}', '{card_currency}')
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
-        
-        result = execute_query(query)
+        result = execute_query(
+            query,
+            (current_user['user_id'], card_number, cvv, expiry_date, card_limit, card_type, card_currency),
+        )
         
         if result:
             # Vulnerability: Sensitive data exposure
@@ -1918,16 +1963,14 @@ def get_virtual_cards(current_user):
 @token_required
 def toggle_card_freeze(current_user, card_id):
     try:
-        # Vulnerability: No CSRF protection
-        # Vulnerability: BOLA - no verification if card belongs to user
-        query = f"""
-            UPDATE virtual_cards 
-            SET is_frozen = NOT is_frozen 
-            WHERE id = {card_id}
+        # Fix (M3-R04): only toggle a card that belongs to the authenticated user.
+        query = """
+            UPDATE virtual_cards
+            SET is_frozen = NOT is_frozen
+            WHERE id = %s AND user_id = %s
             RETURNING is_frozen
         """
-        
-        result = execute_query(query)
+        result = execute_query(query, (card_id, current_user['user_id']))
         
         if result:
             return jsonify({
@@ -1988,54 +2031,46 @@ def get_card_transactions(current_user, card_id):
 @token_required
 def update_card_limit(current_user, card_id):
     try:
-        data = request.get_json()
-        
-        # Mass Assignment Vulnerability - Build dynamic query based on all input fields
-        update_fields = []
-        update_values = []
-        updated_fields_list = []  # Store field names in a regular list
-        
-        # Iterate through all fields sent in request
-        # Vulnerability: No whitelist of allowed fields
-        # This allows updating any column including balance
-        for key, value in data.items():
-            # Convert value to float if it's numeric
-            try:
-                value = float(value)
-            except (ValueError, TypeError):
-                value = str(value)
-            
-            # Vulnerability: Direct field name injection
-            update_fields.append(f"{key} = %s")
-            update_values.append(value)
-            updated_fields_list.append(key)  # Add to list instead of dict_keys
-            
-        # Vulnerability: BOLA - no verification if card belongs to user
-        query = f"""
-            UPDATE virtual_cards 
-            SET {', '.join(update_fields)}
-            WHERE id = {card_id}
+        data = request.get_json() or {}
+
+        # Fix (M3-R05): only the card limit may be updated, through a fixed
+        # parameterized query. The client can no longer set current_balance,
+        # user_id or any other column via mass assignment.
+        try:
+            new_limit = Decimal(str(data.get('card_limit')))
+        except (InvalidOperation, TypeError):
+            return jsonify({'status': 'error', 'message': 'Invalid card_limit'}), 400
+        if not new_limit.is_finite() or new_limit < 0 or new_limit > Decimal('1000000'):
+            return jsonify({'status': 'error', 'message': 'card_limit out of range'}), 400
+
+        # Fix (M3-R04): verify the card belongs to the authenticated user.
+        owned = execute_query(
+            "SELECT id FROM virtual_cards WHERE id = %s AND user_id = %s",
+            (card_id, current_user['user_id']),
+        )
+        if not owned:
+            return jsonify({'status': 'error', 'message': 'Card not found'}), 404
+
+        query = """
+            UPDATE virtual_cards
+            SET card_limit = %s
+            WHERE id = %s AND user_id = %s
             RETURNING id, card_limit, current_balance, is_frozen, is_active, card_type, currency
         """
-        
-        result = execute_query(query, tuple(update_values))
-        
+        result = execute_query(query, (new_limit, card_id, current_user['user_id']))
+
         if result:
-            # Vulnerability: Information disclosure - returning all updated fields
             return jsonify({
                 'status': 'success',
                 'message': 'Card updated successfully',
-                'debug_info': {
-                    'updated_fields': updated_fields_list,  # Use list instead of dict_keys
-                    'card_details': {
-                        'id': result[0][0],
-                        'card_limit': float(result[0][1]),
-                        'current_balance': float(result[0][2]),
-                        'is_frozen': result[0][3],
-                        'is_active': result[0][4],
-                        'card_type': result[0][5],
-                        'currency': result[0][6]
-                    }
+                'card_details': {
+                    'id': result[0][0],
+                    'card_limit': float(result[0][1]),
+                    'current_balance': float(result[0][2]),
+                    'is_frozen': result[0][3],
+                    'is_active': result[0][4],
+                    'card_type': result[0][5],
+                    'currency': result[0][6]
                 }
             })
             
@@ -2085,13 +2120,10 @@ def fund_virtual_card(current_user, card_id):
             'exchange_rate': CARD_CURRENCY_RATES[card_currency]['rate']
         }
 
-        # Vulnerability: Mass assignment allows client input to override
-        # internal funding fields such as the exchange rate.
-        for key, value in data.items():
-            funding_context[key] = value
-
+        # Fix (M3-R06): the exchange rate comes only from the server; the client
+        # cannot override it. Only the funding amount is taken from the request.
         usd_amount = float(funding_context.get('amount', 0))
-        exchange_rate = float(funding_context.get('exchange_rate'))
+        exchange_rate = float(funding_context['exchange_rate'])
 
         if usd_amount <= 0:
             return jsonify({

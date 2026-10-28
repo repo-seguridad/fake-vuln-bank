@@ -414,7 +414,7 @@ async function fetchTransactions() {
                                 ${isOutgoing ? 'To: ' + t.to_account : 'From: ' + t.from_account}
                             </div>
                             <div class="transaction-date">${t.timestamp}</div>
-                            ${t.description ? `<div class="transaction-description">${t.description}</div>` : ''}
+                            ${t.description ? `<div class="transaction-description">${escapeHtml(t.description)}</div>` : ''}
                         </div>
                         <div class="transaction-amount ${transactionType}">
                             ${isOutgoing ? '-' : '+'}$${Math.abs(t.amount)}
@@ -1040,7 +1040,7 @@ async function loadPaymentHistory() {
                         </div>
                         <div>Reference: ${payment.reference}</div>
                         <div>Date: ${new Date(payment.created_at).toLocaleString()}</div>
-                        ${payment.description ? `<div>Description: ${payment.description}</div>` : ''}
+                        ${payment.description ? `<div>Description: ${escapeHtml(payment.description)}</div>` : ''}
                     </div>
                 </div>
             `).join('');
