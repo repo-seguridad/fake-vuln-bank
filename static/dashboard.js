@@ -364,10 +364,11 @@ async function handleBioUpdate(event) {
 
         const data = await response.json();
         if (data.status === 'success') {
-            // Update the bio display immediately with user input (XSS vulnerability)
+            // Fix (M2-R04): render user-controlled bio as text, not HTML, so
+            // injected markup/script cannot execute (stored XSS neutralized).
             const bioDisplay = document.getElementById('user-bio-display');
             if (bioDisplay) {
-                bioDisplay.innerHTML = bio; // Direct innerHTML assignment - XSS!
+                bioDisplay.textContent = bio;
             }
 
             document.getElementById('bio-message').innerText = 'Bio updated successfully!';

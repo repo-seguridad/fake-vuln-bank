@@ -9,7 +9,8 @@ import secrets
 from dotenv import load_dotenv
 from auth import generate_token, token_required, verify_token, init_auth_routes, hash_password, verify_password
 import auth
-from werkzeug.utils import secure_filename 
+from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash
 from flask_swagger_ui import get_swaggerui_blueprint
 from flask_cors import CORS
 from database import (
@@ -30,6 +31,9 @@ from functools import wraps
 from collections import defaultdict
 import requests
 from urllib.parse import urlparse
+import socket
+import ipaddress
+import uuid
 import platform
 
 # Load environment variables
@@ -78,6 +82,30 @@ init_audit_routes(app)
 
 # Fix (M1-R09): Flask secret key is loaded from the environment, never hardcoded.
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_urlsafe(64)
+
+
+def admin_required(f):
+    """
+    Fix (M2-R07): authorize admin actions by reading the role and status from
+    the database on every request, instead of trusting the is_admin claim of
+    the (forgeable) token. A suspended or non-admin user is denied.
+    """
+    @wraps(f)
+    @token_required
+    def decorated(current_user, *args, **kwargs):
+        rows = execute_query(
+            "SELECT is_admin, is_suspended FROM users WHERE id = %s",
+            (current_user.get('user_id'),),
+        )
+        if not rows:
+            return jsonify({'error': 'Forbidden'}), 403
+        is_admin, is_suspended = rows[0][0], rows[0][1]
+        if is_suspended:
+            return jsonify({'error': 'Account suspended'}), 403
+        if not is_admin:
+            return jsonify({'error': 'Admin privilege required'}), 403
+        return f(current_user, *args, **kwargs)
+    return decorated
 
 # Rate limiting configuration
 RATE_LIMIT_WINDOW = 3 * 60 * 60  # 3 hours in seconds
@@ -349,55 +377,38 @@ def register():
                 return jsonify({
                     'status': 'error',
                     'message': 'Username already exists',
-                    'username': user_data.get('username'),
-                    'tried_at': str(datetime.now())  # Information disclosure
                 }), 400
             
-            # Build dynamic query based on user input fields
-            # Vulnerability: Mass Assignment possible here
-            fields = ['username', 'password', 'account_number']
-            values = [username, user_data.get('password'), account_number]
-            
-            # Include any additional parameters from user input
-            for key, value in user_data.items():
-                if key not in ['username', 'password']:
-                    fields.append(key)
-                    values.append(value)
-            
-            # Build the SQL query dynamically
-            query = f"""
-                INSERT INTO users ({', '.join(fields)})
-                VALUES ({', '.join(['%s'] * len(fields))})
+            # Fix (M2-R01): strict column whitelist. Only username, password and a
+            # server-generated account_number are inserted, so the client can no
+            # longer set is_admin, balance, reset_pin, etc. via mass assignment.
+            # The password is stored as a salted hash.
+            password = user_data.get('password') if isinstance(user_data, dict) else None
+            if not password:
+                return jsonify({'status': 'error', 'message': 'Password is required'}), 400
+
+            query = """
+                INSERT INTO users (username, password, account_number)
+                VALUES (%s, %s, %s)
                 RETURNING id, username, account_number, balance, is_admin
             """
-            
-            result = execute_query(query, values, fetch=True)
+            result = execute_query(
+                query,
+                (username, generate_password_hash(password), account_number),
+                fetch=True,
+            )
             
             if not result or not result[0]:
                 raise Exception("Failed to create user")
                 
             user = result[0]
             
-            # Excessive Data Exposure in Response
-            sensitive_data = {
+            # Fix (M2-R01/M2-R11): minimal response; the raw input, role, balance
+            # and debug headers are no longer echoed back to the client.
+            response = jsonify({
                 'status': 'success',
                 'message': 'Registration successful! Proceed to login',
-                'debug_data': {  # Sensitive data exposed
-                    'user_id': user[0],
-                    'username': user[1],
-                    'account_number': user[2],
-                    'balance': float(user[3]) if user[3] else 1000.0,
-                    'is_admin': user[4],
-                    'registration_time': str(datetime.now()),
-                    'server_info': request.headers.get('User-Agent'),
-                    'raw_data': user_data,  # Exposing raw input data
-                    'fields_registered': fields  # Show what fields were registered
-                }
-            }
-            
-            response = jsonify(sensitive_data)
-            response.headers['X-Debug-Info'] = str(sensitive_data['debug_data'])
-            response.headers['X-User-Info'] = f"id={user[0]};admin={user[4]};balance={user[3]}"
+            })
 
             record_event(
                 'ACCOUNT_CREATED',
@@ -515,18 +526,8 @@ def login():
         
     return render_template('login.html')
 
-@app.route('/debug/users')
-def debug_users():
-    users = execute_query("SELECT id, username, password, account_number, is_admin FROM users")
-    return jsonify({'users': [
-        {
-            'id': u[0],
-            'username': u[1],
-            'password': u[2],
-            'account_number': u[3],
-            'is_admin': u[4]
-        } for u in users
-    ]})
+# Fix (M2-R03): the unauthenticated /debug/users endpoint that dumped every
+# user's credentials has been removed.
 
 @app.route('/dashboard')
 @token_required
@@ -736,18 +737,24 @@ def upload_profile_picture(current_user):
         return jsonify({'error': 'No file selected'}), 400
         
     try:
-        # Vulnerability: No file type validation
-        # Vulnerability: Using user-controlled filename
-        # Vulnerability: No file size check
-        # Vulnerability: No content-type validation
-        filename = secure_filename(file.filename)
-        
-        # Add random prefix to prevent filename collisions
-        filename = f"{random.randint(1, 1000000)}_{filename}"
-        
-        # Vulnerability: Path traversal possible if filename contains ../
+        # Fix (M2-R05): validate extension and MIME type, cap the size, and use a
+        # server-generated random filename so no active content or oversized file
+        # can be stored or served from the uploads directory.
+        ALLOWED_EXT = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+        ALLOWED_MIME = {'image/png', 'image/jpeg', 'image/gif', 'image/webp'}
+        ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+        if ext not in ALLOWED_EXT or file.mimetype not in ALLOWED_MIME:
+            return jsonify({'status': 'error', 'message': 'Only PNG/JPEG/GIF/WebP images are allowed'}), 400
+
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        file.seek(0)
+        if size > 2 * 1024 * 1024:
+            return jsonify({'status': 'error', 'message': 'Image is too large (max 2 MB)'}), 400
+
+        filename = f"{uuid.uuid4().hex}.{ext}"
         file_path = os.path.join(UPLOAD_FOLDER, filename)
-        
+
         file.save(file_path)
         
         # Update database with just the filename
@@ -772,7 +779,34 @@ def upload_profile_picture(current_user):
             'file_path': file_path  # Vulnerability: Information disclosure
         }), 500
 
-# Upload profile picture by URL (Intentionally Vulnerable to SSRF)
+def _is_blocked_host(host):
+    """Fix (M2-R06): resolve the host and block loopback, private, link-local,
+    reserved, multicast and unspecified addresses (SSRF targets)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return True  # unresolvable host -> block
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return True
+    return False
+
+
+def validate_import_url(url):
+    """Return an error message if the URL must not be fetched, else None."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        return 'Only http/https URLs are allowed'
+    if not parsed.hostname:
+        return 'Invalid URL host'
+    if _is_blocked_host(parsed.hostname):
+        return 'URL host is not allowed'
+    return None
+
+
+# Upload profile picture by URL (SSRF-hardened)
 @app.route('/upload_profile_picture_url', methods=['POST'])
 @token_required
 def upload_profile_picture_url(current_user):
@@ -783,14 +817,21 @@ def upload_profile_picture_url(current_user):
         if not image_url:
             return jsonify({'status': 'error', 'message': 'image_url is required'}), 400
 
-        # Vulnerabilities:
-        # - No URL scheme/host allowlist (SSRF)
-        # - SSL verification disabled
-        # - Follows redirects
-        # - No content-type or size validation
-        resp = requests.get(image_url, timeout=10, allow_redirects=True, verify=False)
-        if resp.status_code >= 400:
-            return jsonify({'status': 'error', 'message': f'Failed to fetch URL: HTTP {resp.status_code}'}), 400
+        # Fix (M2-R06): validate the URL before fetching to prevent SSRF.
+        url_error = validate_import_url(image_url)
+        if url_error:
+            return jsonify({'status': 'error', 'message': url_error}), 400
+
+        # Do not follow redirects (they could point back to internal hosts),
+        # verify TLS, and reject non-image or oversized responses.
+        resp = requests.get(image_url, timeout=10, allow_redirects=False, verify=True)
+        if not (200 <= resp.status_code < 300):
+            return jsonify({'status': 'error', 'message': 'Failed to fetch URL'}), 400
+        if not resp.headers.get('Content-Type', '').startswith('image/'):
+            return jsonify({'status': 'error', 'message': 'URL did not return an image'}), 400
+        content = resp.content
+        if len(content) > 2 * 1024 * 1024:
+            return jsonify({'status': 'error', 'message': 'Image is too large'}), 400
 
         # Derive filename from URL path (user-controlled)
         parsed = urlparse(image_url)
@@ -799,9 +840,9 @@ def upload_profile_picture_url(current_user):
         filename = f"{random.randint(1, 1000000)}_{filename}"
         file_path = os.path.join(UPLOAD_FOLDER, filename)
 
-        # Save content directly without validation
+        # Save the validated image content.
         with open(file_path, 'wb') as f:
-            f.write(resp.content)
+            f.write(content)
 
         # Store just the filename in DB (same pattern as file upload)
         execute_query(
@@ -814,11 +855,6 @@ def upload_profile_picture_url(current_user):
             'status': 'success',
             'message': 'Profile picture imported from URL',
             'file_path': os.path.join('static/uploads', filename),
-            'debug_info': {  # Information disclosure for learning
-                'fetched_url': image_url,
-                'http_status': resp.status_code,
-                'content_length': len(resp.content)
-            }
         })
     except Exception as e:
         print(f"URL image import error: {str(e)}")
@@ -873,32 +909,9 @@ def _is_loopback_request():
     except Exception:
         return False
 
-@app.route('/internal/secret', methods=['GET'])
-def internal_secret():
-    # Soft internal check: allow only loopback requests
-    if not _is_loopback_request():
-        return jsonify({'error': 'Internal resource. Loopback only.'}), 403
-
-    demo_env = {k: os.getenv(k) for k in [
-        'DB_NAME','DB_USER','DB_PASSWORD','DB_HOST','DB_PORT','DEEPSEEK_API_KEY'
-    ]}
-    # Preview sensitive values (intentionally exposing)
-    if demo_env.get('DEEPSEEK_API_KEY'):
-        demo_env['DEEPSEEK_API_KEY'] = demo_env['DEEPSEEK_API_KEY'][:8] + '...'
-
-    return jsonify({
-        'status': 'internal',
-        'note': 'Intentionally sensitive data for SSRF demonstration',
-        'secrets': {
-            'app_secret_key': app.secret_key,
-            'jwt_secret': getattr(auth, 'JWT_SECRET', None),
-            'env_preview': demo_env
-        },
-        'system': {
-            'platform': platform.platform(),
-            'python_version': platform.python_version()
-        }
-    })
+# Fix (M2-R06): the /internal/secret endpoint that exposed app.secret_key and
+# JWT_SECRET has been removed. It is no longer reachable (also blocked by the
+# SSRF guard above).
 
 @app.route('/internal/config.json', methods=['GET'])
 def internal_config():
@@ -1043,10 +1056,8 @@ def request_loan(current_user):
 
 # Hidden admin endpoint (security through obscurity)
 @app.route('/sup3r_s3cr3t_admin')
-@token_required
+@admin_required
 def admin_panel(current_user):
-    if not current_user['is_admin']:
-        return "Access Denied", 403
 
     # Basic pagination to avoid rendering every user at once
     page = max(request.args.get('page', default=1, type=int), 1)
@@ -1168,11 +1179,8 @@ def approve_loan(current_user, loan_id):
 
 # Delete account endpoint
 @app.route('/admin/delete_account/<int:user_id>', methods=['POST'])
-@token_required
+@admin_required
 def delete_account(current_user, user_id):
-    if not current_user.get('is_admin'):
-        return jsonify({'error': 'Access Denied'}), 403
-    
     try:
         # Read the identity before the delete, because afterwards the row is gone
         # and the audit entry would have nothing but a numeric id to point at.
@@ -1218,11 +1226,8 @@ def delete_account(current_user, user_id):
         }), 500
 
 @app.route('/admin/toggle_suspension/<int:user_id>', methods=['POST'])
-@token_required
+@admin_required
 def toggle_account_suspension(current_user, user_id):
-    if not current_user.get('is_admin'):
-        return jsonify({'error': 'Access Denied'}), 403
-
     try:
         if user_id == current_user.get('user_id'):
             return jsonify({
@@ -1279,11 +1284,8 @@ def toggle_account_suspension(current_user, user_id):
 
 # Create admin endpoint
 @app.route('/admin/create_admin', methods=['POST'])
-@token_required
+@admin_required
 def create_admin(current_user):
-    if not current_user.get('is_admin'):
-        return jsonify({'error': 'Access Denied'}), 403
-    
     try:
         data = request.get_json()
         username = data.get('username')
@@ -1297,11 +1299,10 @@ def create_admin(current_user):
                 'message': validation_error
             }), 400
         
-        # Vulnerability: SQL injection possible
-        # Vulnerability: No password complexity requirements
-        # Vulnerability: No account number uniqueness check
+        # Fix (M2-R08): parameterized INSERT and hashed password.
         execute_query(
-            f"INSERT INTO users (username, password, account_number, is_admin) VALUES ('{username}', '{password}', '{account_number}', true)",
+            "INSERT INTO users (username, password, account_number, is_admin) VALUES (%s, %s, %s, true)",
+            (username, generate_password_hash(password), account_number),
             fetch=False
         )
 
@@ -1576,10 +1577,18 @@ def api_v3_forgot_password():
 @app.route('/api/v3/user/<int:user_id>', methods=['GET'])
 @token_required
 def api_v3_get_user(current_user, user_id):
-    """Get user details by ID - Vulnerable to IDOR"""
+    """Get user details by ID."""
     try:
-        # Vulnerability: No authorization check - any user can fetch any user's details
-        # This is an IDOR (Insecure Direct Object Reference) vulnerability
+        # Fix (M2-R02): a user may only read their own record; administrators
+        # may read any. This closes the IDOR enumeration of every account.
+        if user_id != current_user.get('user_id'):
+            admin_row = execute_query(
+                "SELECT is_admin FROM users WHERE id = %s",
+                (current_user.get('user_id'),),
+            )
+            if not admin_row or not admin_row[0][0]:
+                return jsonify({'status': 'error', 'message': 'Forbidden'}), 403
+
         user = execute_query(
             "SELECT * FROM users WHERE id = %s",
             (user_id,)
